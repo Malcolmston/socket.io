@@ -1,0 +1,10 @@
+{
+  "name": "socketio-interop",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Interop tests: real Node socket.io-client against the Go server",
+  "dependencies": {
+    "socket.io-client": "^4.7.0"
+  }
+}
