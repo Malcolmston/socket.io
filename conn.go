@@ -25,6 +25,17 @@ type conn struct {
 	lastPong time.Time
 	stopPing chan struct{}
 	pingOnce sync.Once
+
+	// pendingBin buffers a binary packet awaiting its attachment frames.
+	pendingBin *pendingBinary
+}
+
+// pendingBinary accumulates the binary attachments for a BINARY_EVENT/ACK until
+// all declared buffers have arrived.
+type pendingBinary struct {
+	packet  Packet
+	buffers [][]byte
+	need    int
 }
 
 // send queues or writes an Engine.IO packet, depending on the active transport.
@@ -37,7 +48,12 @@ func (c *conn) send(p engineio.Packet) {
 	if c.wsConn != nil {
 		w := c.wsConn
 		c.mu.Unlock()
-		_ = w.WriteText(p.Encode())
+		if p.Binary != nil {
+			// Binary attachments travel as native websocket binary frames.
+			_ = w.WriteMessage(ws.BinaryMessage, p.Binary)
+		} else {
+			_ = w.WriteText(p.Encode())
+		}
 		return
 	}
 	c.outbuf = append(c.outbuf, p)
@@ -57,12 +73,17 @@ func (c *conn) send(p engineio.Packet) {
 }
 
 // sendPacket encodes and sends a Socket.IO packet inside an Engine.IO MESSAGE.
+// When the payload contains binary ([]byte) data it is sent as a BINARY_EVENT/
+// BINARY_ACK followed by the raw attachment frames.
 func (c *conn) sendPacket(p Packet) error {
-	data, err := p.Encode()
+	text, buffers, err := p.EncodeBinary()
 	if err != nil {
 		return err
 	}
-	c.send(engineio.NewMessage(data))
+	c.send(engineio.NewMessage(text))
+	for _, buf := range buffers {
+		c.send(engineio.Packet{Type: engineio.Message, Binary: buf})
+	}
 	return nil
 }
 
@@ -70,6 +91,10 @@ func (c *conn) sendPacket(p Packet) error {
 func (c *conn) handleEnginePacket(p engineio.Packet) {
 	switch p.Type {
 	case engineio.Message:
+		if p.Binary != nil {
+			c.handleBinaryAttachment(p.Binary)
+			return
+		}
 		c.handleMessage(p.Data)
 	case engineio.Ping:
 		// A client-initiated ping (rare in EIO4) is answered with a pong.
@@ -92,12 +117,53 @@ func (c *conn) handleMessage(data string) {
 	switch pkt.Type {
 	case Connect:
 		c.handleConnect(pkt)
-	case Event, BinaryEvent:
+	case Event:
 		c.handleEvent(pkt)
-	case Ack, BinaryAck:
+	case Ack:
 		c.handleAck(pkt)
+	case BinaryEvent, BinaryAck:
+		if pkt.attachments > 0 {
+			// Wait for the attachment frames before dispatching.
+			c.mu.Lock()
+			c.pendingBin = &pendingBinary{packet: pkt, need: pkt.attachments}
+			c.mu.Unlock()
+			return
+		}
+		if pkt.Type == BinaryEvent {
+			c.handleEvent(pkt)
+		} else {
+			c.handleAck(pkt)
+		}
 	case Disconnect:
 		c.handleDisconnect(pkt)
+	}
+}
+
+// handleBinaryAttachment collects a binary buffer for a pending binary packet
+// and dispatches the packet once all attachments have arrived.
+func (c *conn) handleBinaryAttachment(buf []byte) {
+	c.mu.Lock()
+	pb := c.pendingBin
+	if pb == nil {
+		c.mu.Unlock()
+		return
+	}
+	pb.buffers = append(pb.buffers, buf)
+	if len(pb.buffers) < pb.need {
+		c.mu.Unlock()
+		return
+	}
+	c.pendingBin = nil
+	c.mu.Unlock()
+
+	pkt := pb.packet
+	pkt.Data = reconstruct(pkt.Data, pb.buffers)
+	if pkt.Type == BinaryEvent {
+		pkt.Type = Event
+		c.handleEvent(pkt)
+	} else {
+		pkt.Type = Ack
+		c.handleAck(pkt)
 	}
 }
 
@@ -271,6 +337,10 @@ func (c *conn) readLoop(wsc *ws.Conn) {
 		mt, data, err := wsc.ReadMessage()
 		if err != nil {
 			break
+		}
+		if mt == ws.BinaryMessage {
+			c.handleBinaryAttachment(data)
+			continue
 		}
 		if mt != ws.TextMessage {
 			continue

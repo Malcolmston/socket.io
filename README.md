@@ -148,9 +148,65 @@ c.Emit("hello", "world")
 reply, _ := c.EmitWithAck("ping", 5*time.Second) // blocks for the ack
 ```
 
+The client supports binary payloads and automatic reconnection:
+
+```go
+c, _ := client.Dial(url, client.Options{Reconnection: true})
+c.On("reconnect", func(args []any) []any { log.Println("reconnected"); return nil })
+```
+
 The server side can likewise request an acknowledgement and block for it with
 `socket.EmitAck(event, timeout, args...)`. `Server.Close()` disconnects all
 sessions.
+
+## Using with express (or any net/http handler)
+
+Attach the Socket.IO server to an existing HTTP server, letting
+[`express`](https://github.com/malcolmston/express) (or an `http.ServeMux`)
+handle everything else — exactly like `new Server(httpServer)` in Node:
+
+```go
+app := express.New()                       // your routes
+app.Get("/api/hello", helloHandler)
+
+io := socketio.New()                       // your socket handlers
+io.OnConnection(func(s *socketio.Socket) { ... })
+
+// io.Handler intercepts /socket.io/ and delegates the rest to app.
+http.ListenAndServe(":3000", io.Handler(app))
+```
+
+`io.Handler(next)` takes any `http.Handler`; pass `nil` to 404 non-Socket.IO
+requests. You can also mount it the other way — as express middleware — with
+`app.Use("/socket.io", express.WrapHandler(io))`, or register it on a mux with
+`io.Attach(mux)`.
+
+## Binary events
+
+Emit and receive `[]byte` payloads; they are carried as Socket.IO binary
+attachments (native WebSocket binary frames, or base64 over polling):
+
+```go
+s.Emit("blob", []byte{0x00, 0x01, 0x02})
+s.On("upload", func(args []any) []any {
+	data := args[0].([]byte)
+	return []any{len(data)}
+})
+```
+
+## Server-wide operations
+
+```go
+io.FetchSockets()                 // all connected sockets
+io.SocketsJoin("room")            // make every socket join a room
+io.SocketsLeave("room")
+io.DisconnectSockets(true)        // disconnect everyone
+io.ServerSideEmit("event", data)  // server-to-server event (single-node: local)
+```
+
+Rooms are stored behind a pluggable `Adapter` (`ns.SetAdapter`); the default is
+in-process. Broadcast flags `io.To("r").Volatile().Compress(false).Emit(...)`
+are supported (advisory on this single-node implementation).
 
 ## Transports
 

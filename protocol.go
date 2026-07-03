@@ -60,7 +60,14 @@ type Packet struct {
 	// Data is the decoded JSON payload: an array for Event/Ack ([name, args...]
 	// or [args...]) and an object for Connect/ConnectError.
 	Data any
+	// attachments is the number of binary buffers a BINARY_EVENT/BINARY_ACK
+	// packet carries (parsed from the "<n>-" wire prefix).
+	attachments int
 }
+
+// Attachments returns the declared number of binary attachments for a
+// BINARY_EVENT/BINARY_ACK packet.
+func (p Packet) Attachments() int { return p.attachments }
 
 // ErrInvalidPacket indicates a malformed Socket.IO packet.
 var ErrInvalidPacket = errors.New("socketio: invalid packet")
@@ -73,6 +80,12 @@ func (p Packet) Encode() (string, error) {
 	}
 	var b strings.Builder
 	b.WriteByte('0' + byte(p.Type))
+
+	// Binary attachment count prefix for binary packet types.
+	if (p.Type == BinaryEvent || p.Type == BinaryAck) && p.attachments > 0 {
+		b.WriteString(strconv.Itoa(p.attachments))
+		b.WriteByte('-')
+	}
 
 	if p.Namespace != "" && p.Namespace != "/" {
 		b.WriteString(p.Namespace)
@@ -110,6 +123,9 @@ func DecodePacket(s string) (Packet, error) {
 			j++
 		}
 		if j < len(s) && s[j] == '-' {
+			if n, err := strconv.Atoi(s[i:j]); err == nil {
+				p.attachments = n
+			}
 			i = j + 1
 		}
 	}

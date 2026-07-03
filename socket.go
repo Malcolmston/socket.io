@@ -29,21 +29,6 @@ type Socket struct {
 	disconnected       bool
 }
 
-func newSocket(c *conn, ns *Namespace, auth any) *Socket {
-	s := &Socket{
-		id:          newID(),
-		namespace:   ns,
-		conn:        c,
-		auth:        auth,
-		handlers:    make(map[string][]EventHandler),
-		rooms:       make(map[string]struct{}),
-		pendingAcks: make(map[uint64]func([]any)),
-	}
-	// Every socket implicitly joins a room named after its own id.
-	ns.join(s, s.id)
-	return s
-}
-
 // ID returns the socket's unique identifier.
 func (s *Socket) ID() string { return s.id }
 

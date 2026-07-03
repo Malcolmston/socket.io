@@ -5,10 +5,30 @@ package socketio
 // returned by Namespace.To, Server.To, and Socket.To, and is the equivalent of
 // io.to(room).emit(...).
 type BroadcastOperator struct {
-	ns     *Namespace
-	rooms  []string
-	except map[string]struct{}
+	ns       *Namespace
+	rooms    []string
+	except   map[string]struct{}
+	volatile bool
+	compress bool
 }
+
+// Volatile marks the broadcast as volatile: messages that cannot be delivered
+// immediately (e.g. to a client mid-reconnect) may be dropped. On this
+// single-node, buffered implementation it is advisory.
+func (b *BroadcastOperator) Volatile() *BroadcastOperator {
+	b.volatile = true
+	return b
+}
+
+// Compress sets whether the payload should be compressed by the transport. It
+// is advisory in this implementation.
+func (b *BroadcastOperator) Compress(on bool) *BroadcastOperator {
+	b.compress = on
+	return b
+}
+
+// In is an alias for To, matching socket.io's io.in(room).
+func (b *BroadcastOperator) In(room string) *BroadcastOperator { return b.To(room) }
 
 // To narrows the broadcast to an additional room.
 func (b *BroadcastOperator) To(room string) *BroadcastOperator {

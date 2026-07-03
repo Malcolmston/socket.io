@@ -62,9 +62,10 @@ func (o *Options) withDefaults() {
 type Server struct {
 	opts Options
 
-	mu         sync.RWMutex
-	namespaces map[string]*Namespace
-	conns      map[string]*conn // engine.io sessions by sid
+	mu             sync.RWMutex
+	namespaces     map[string]*Namespace
+	conns          map[string]*conn // engine.io sessions by sid
+	serverHandlers map[string][]func([]any)
 }
 
 // New creates a Server. An optional Options may be supplied.
@@ -168,6 +169,71 @@ func (s *Server) Use(fn func(socket *Socket, next func(err error))) *Server {
 	s.Of("/").Use(fn)
 	return s
 }
+
+// FetchSockets returns all sockets in the default namespace.
+func (s *Server) FetchSockets() []*Socket { return s.Of("/").FetchSockets() }
+
+// SocketsJoin makes every socket in the default namespace join the given rooms.
+func (s *Server) SocketsJoin(rooms ...string) { s.Of("/").SocketsJoin(rooms...) }
+
+// SocketsLeave makes every socket in the default namespace leave the given rooms.
+func (s *Server) SocketsLeave(rooms ...string) { s.Of("/").SocketsLeave(rooms...) }
+
+// DisconnectSockets disconnects every socket in the default namespace.
+func (s *Server) DisconnectSockets(closeTransport bool) {
+	s.Of("/").DisconnectSockets(closeTransport)
+}
+
+// OnServerEvent registers a handler for server-side events delivered via
+// ServerSideEmit. On this single-node implementation these are local; a
+// multi-node deployment would relay them between servers through an adapter.
+func (s *Server) OnServerEvent(event string, handler func(args []any)) *Server {
+	s.mu.Lock()
+	if s.serverHandlers == nil {
+		s.serverHandlers = make(map[string][]func([]any))
+	}
+	s.serverHandlers[event] = append(s.serverHandlers[event], handler)
+	s.mu.Unlock()
+	return s
+}
+
+// ServerSideEmit emits an event to other servers (and this one), the equivalent
+// of io.serverSideEmit. Single-node: it invokes locally registered handlers.
+func (s *Server) ServerSideEmit(event string, args ...any) {
+	s.mu.RLock()
+	handlers := append([]func([]any){}, s.serverHandlers[event]...)
+	s.mu.RUnlock()
+	for _, h := range handlers {
+		h(args)
+	}
+}
+
+// Handler wraps the server so it intercepts Socket.IO requests (those under its
+// Path) and delegates everything else to next — the Go equivalent of attaching
+// Socket.IO to an existing HTTP server that is otherwise served by Express:
+//
+//	app := express.New()          // your routes
+//	io := socketio.New()          // your socket handlers
+//	http.ListenAndServe(":3000", io.Handler(app))
+//
+// next may be any http.Handler (an *express.Application, an http.ServeMux, ...);
+// pass nil to 404 non-Socket.IO requests.
+func (s *Server) Handler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, s.opts.Path) {
+			s.ServeHTTP(w, r)
+			return
+		}
+		if next != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	})
+}
+
+// Attach registers the server on an http.ServeMux at its Path.
+func (s *Server) Attach(mux *http.ServeMux) { mux.Handle(s.opts.Path, s) }
 
 // Close disconnects every connected session and shuts the server down. It does
 // not stop the underlying http.Server (the caller owns that).

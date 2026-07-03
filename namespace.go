@@ -10,10 +10,18 @@ type Namespace struct {
 	server *Server
 
 	mu           sync.RWMutex
-	sockets      map[string]*Socket            // by socket id
-	rooms        map[string]map[string]*Socket // room -> socket id -> socket
+	adapter      Adapter
 	connHandlers []func(*Socket)
 	middleware   []func(*Socket, func(error))
+}
+
+// SetAdapter replaces the namespace's room adapter (e.g. with a Redis-backed
+// one for multi-node scale-out). Call it before any sockets connect.
+func (ns *Namespace) SetAdapter(a Adapter) *Namespace {
+	ns.mu.Lock()
+	ns.adapter = a
+	ns.mu.Unlock()
+	return ns
 }
 
 // Use registers connection middleware for the namespace. Each middleware runs
@@ -54,8 +62,7 @@ func newNamespace(server *Server, name string) *Namespace {
 	return &Namespace{
 		name:    name,
 		server:  server,
-		sockets: make(map[string]*Socket),
-		rooms:   make(map[string]map[string]*Socket),
+		adapter: newMemoryAdapter(),
 	}
 }
 
@@ -73,10 +80,19 @@ func (ns *Namespace) OnConnection(fn func(*Socket)) *Namespace {
 
 // add creates and registers a socket for a new namespace connection.
 func (ns *Namespace) add(c *conn, _ string, auth any) *Socket {
-	s := newSocket(c, ns, auth)
-	ns.mu.Lock()
-	ns.sockets[s.id] = s
-	ns.mu.Unlock()
+	// Register with the adapter before creating the socket so the socket's
+	// implicit self-room join resolves.
+	s := &Socket{
+		id:          newID(),
+		namespace:   ns,
+		conn:        c,
+		auth:        auth,
+		handlers:    make(map[string][]EventHandler),
+		rooms:       make(map[string]struct{}),
+		pendingAcks: make(map[uint64]func([]any)),
+	}
+	ns.adapter.Add(s.id, s)
+	ns.join(s, s.id) // implicit room named after the socket id
 	return s
 }
 
@@ -92,66 +108,52 @@ func (ns *Namespace) fireConnection(s *Socket) {
 
 // remove deletes a socket from the namespace and all rooms.
 func (ns *Namespace) remove(s *Socket) {
-	ns.mu.Lock()
-	delete(ns.sockets, s.id)
-	for room, members := range ns.rooms {
-		if _, ok := members[s.id]; ok {
-			delete(members, s.id)
-			if len(members) == 0 {
-				delete(ns.rooms, room)
-			}
-		}
-	}
-	ns.mu.Unlock()
+	ns.adapter.Remove(s.id)
 }
 
 // join adds a socket to a room.
 func (ns *Namespace) join(s *Socket, room string) {
-	ns.mu.Lock()
-	members := ns.rooms[room]
-	if members == nil {
-		members = make(map[string]*Socket)
-		ns.rooms[room] = members
-	}
-	members[s.id] = s
-	ns.mu.Unlock()
+	ns.adapter.Join(s.id, room)
 	s.addRoom(room)
 }
 
 // leave removes a socket from a room.
 func (ns *Namespace) leave(s *Socket, room string) {
-	ns.mu.Lock()
-	if members := ns.rooms[room]; members != nil {
-		delete(members, s.id)
-		if len(members) == 0 {
-			delete(ns.rooms, room)
-		}
-	}
-	ns.mu.Unlock()
+	ns.adapter.Leave(s.id, room)
 	s.removeRoom(room)
 }
 
 // Sockets returns all sockets currently connected to the namespace.
-func (ns *Namespace) Sockets() []*Socket {
-	ns.mu.RLock()
-	defer ns.mu.RUnlock()
-	out := make([]*Socket, 0, len(ns.sockets))
-	for _, s := range ns.sockets {
-		out = append(out, s)
-	}
-	return out
-}
+func (ns *Namespace) Sockets() []*Socket { return ns.adapter.AllSockets() }
+
+// FetchSockets returns all sockets in the namespace (alias for Sockets, matching
+// io.fetchSockets()).
+func (ns *Namespace) FetchSockets() []*Socket { return ns.adapter.AllSockets() }
 
 // SocketsInRoom returns the sockets that are members of a room.
 func (ns *Namespace) SocketsInRoom(room string) []*Socket {
-	ns.mu.RLock()
-	defer ns.mu.RUnlock()
-	members := ns.rooms[room]
-	out := make([]*Socket, 0, len(members))
-	for _, s := range members {
-		out = append(out, s)
+	return ns.adapter.SocketsInRoom(room)
+}
+
+// SocketsJoin makes every socket in the namespace join the given rooms.
+func (ns *Namespace) SocketsJoin(rooms ...string) {
+	for _, s := range ns.Sockets() {
+		s.Join(rooms...)
 	}
-	return out
+}
+
+// SocketsLeave makes every socket in the namespace leave the given rooms.
+func (ns *Namespace) SocketsLeave(rooms ...string) {
+	for _, s := range ns.Sockets() {
+		s.Leave(rooms...)
+	}
+}
+
+// DisconnectSockets disconnects every socket in the namespace.
+func (ns *Namespace) DisconnectSockets(closeTransport bool) {
+	for _, s := range ns.Sockets() {
+		s.Disconnect(closeTransport)
+	}
 }
 
 // Emit broadcasts an event to every socket in the namespace.

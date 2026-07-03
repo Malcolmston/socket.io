@@ -26,18 +26,21 @@ type Handler func(args []any) []any
 // Client is a connected Socket.IO client.
 type Client struct {
 	namespace string
-	ws        *ws.Conn
+	wsURL     string
+	opts      Options
 
 	mu          sync.Mutex
+	ws          *ws.Conn
 	handlers    map[string][]Handler
 	ackCounter  uint64
 	pendingAcks map[uint64]chan []any
 	sid         string
 	closed      bool
 	connErr     error
+	pendingBin  *pendingBinary
 
 	connectedCh chan struct{}
-	connectOnce sync.Once
+	connectOnce *sync.Once
 }
 
 // Options configures Dial.
@@ -48,6 +51,14 @@ type Options struct {
 	Auth any
 	// DialTimeout bounds the connection handshake (default 10s).
 	DialTimeout time.Duration
+	// Reconnection enables automatic reconnection after an unexpected
+	// disconnect.
+	Reconnection bool
+	// ReconnectionAttempts bounds reconnection tries (0 = unlimited).
+	ReconnectionAttempts int
+	// ReconnectionDelay is the initial backoff between attempts (default 1s,
+	// doubling up to 5s).
+	ReconnectionDelay time.Duration
 }
 
 // Dial connects to a Socket.IO server at rawURL (http:// or ws://) and returns
@@ -63,58 +74,113 @@ func Dial(rawURL string, opts ...Options) (*Client, error) {
 	if o.DialTimeout == 0 {
 		o.DialTimeout = 10 * time.Second
 	}
+	if o.ReconnectionDelay == 0 {
+		o.ReconnectionDelay = time.Second
+	}
 
 	wsURL, err := engineWSURL(rawURL)
-	if err != nil {
-		return nil, err
-	}
-	conn, err := ws.Dial(wsURL, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	c := &Client{
 		namespace:   o.Namespace,
-		ws:          conn,
+		wsURL:       wsURL,
+		opts:        o,
 		handlers:    make(map[string][]Handler),
 		pendingAcks: make(map[uint64]chan []any),
-		connectedCh: make(chan struct{}),
+	}
+	if err := c.establish(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// establish opens the transport, performs the Engine.IO + Socket.IO handshakes,
+// and starts the read loop. It is used for both the initial connection and
+// reconnections.
+func (c *Client) establish() error {
+	conn, err := ws.Dial(c.wsURL, nil)
+	if err != nil {
+		return err
 	}
 
 	// First frame must be the Engine.IO OPEN packet.
 	mt, data, err := conn.ReadMessage()
 	if err != nil || mt != ws.TextMessage {
 		conn.Close()
-		return nil, errors.New("client: expected OPEN packet")
+		return errors.New("client: expected OPEN packet")
 	}
 	openPkt, err := engineio.Decode(string(data))
 	if err != nil || openPkt.Type != engineio.Open {
 		conn.Close()
-		return nil, errors.New("client: malformed OPEN packet")
+		return errors.New("client: malformed OPEN packet")
 	}
 
-	go c.readLoop()
+	c.mu.Lock()
+	c.ws = conn
+	c.connectedCh = make(chan struct{})
+	c.connectOnce = &sync.Once{}
+	c.connErr = nil
+	c.mu.Unlock()
 
-	// Send the Socket.IO CONNECT for the namespace.
-	connect := socketio.Packet{Type: socketio.Connect, Namespace: o.Namespace}
-	if o.Auth != nil {
-		connect.Data = o.Auth
+	go c.readLoop(conn)
+
+	connect := socketio.Packet{Type: socketio.Connect, Namespace: c.namespace}
+	if c.opts.Auth != nil {
+		connect.Data = c.opts.Auth
 	}
 	if err := c.sendPacket(connect); err != nil {
 		conn.Close()
-		return nil, err
+		return err
 	}
 
 	select {
 	case <-c.connectedCh:
-		if c.connErr != nil {
+		c.mu.Lock()
+		e := c.connErr
+		c.mu.Unlock()
+		if e != nil {
 			conn.Close()
-			return nil, c.connErr
+			return e
 		}
-		return c, nil
-	case <-time.After(o.DialTimeout):
+		return nil
+	case <-time.After(c.opts.DialTimeout):
 		conn.Close()
-		return nil, errors.New("client: connect timeout")
+		return errors.New("client: connect timeout")
+	}
+}
+
+// reconnectLoop attempts to re-establish the connection with exponential
+// backoff after an unexpected disconnect.
+func (c *Client) reconnectLoop() {
+	delay := c.opts.ReconnectionDelay
+	for attempt := 1; c.opts.ReconnectionAttempts == 0 || attempt <= c.opts.ReconnectionAttempts; attempt++ {
+		time.Sleep(delay)
+		c.mu.Lock()
+		closed := c.closed
+		c.mu.Unlock()
+		if closed {
+			return
+		}
+		if err := c.establish(); err == nil {
+			c.fireLocal("reconnect")
+			return
+		}
+		if delay < 5*time.Second {
+			delay *= 2
+		}
+	}
+}
+
+// fireLocal dispatches a client-lifecycle event ("reconnect", "disconnect") to
+// any handlers registered for it.
+func (c *Client) fireLocal(event string, args ...any) {
+	c.mu.Lock()
+	handlers := append([]Handler(nil), c.handlers[event]...)
+	c.mu.Unlock()
+	for _, h := range handlers {
+		h(args)
 	}
 }
 
@@ -171,25 +237,55 @@ func (c *Client) Close() error {
 		return nil
 	}
 	c.closed = true
+	conn := c.ws
 	c.mu.Unlock()
 	_ = c.sendPacket(socketio.Packet{Type: socketio.Disconnect, Namespace: c.namespace})
-	return c.ws.Close()
+	if conn != nil {
+		return conn.Close()
+	}
+	return nil
+}
+
+// pendingBinary accumulates binary attachments for an inbound binary packet.
+type pendingBinary struct {
+	packet  socketio.Packet
+	buffers [][]byte
+	need    int
 }
 
 func (c *Client) sendPacket(p socketio.Packet) error {
-	s, err := p.Encode()
+	c.mu.Lock()
+	conn := c.ws
+	c.mu.Unlock()
+	if conn == nil {
+		return errors.New("client: not connected")
+	}
+	text, buffers, err := p.EncodeBinary()
 	if err != nil {
 		return err
 	}
-	return c.ws.WriteText(engineio.NewMessage(s).Encode())
+	if err := conn.WriteText(engineio.NewMessage(text).Encode()); err != nil {
+		return err
+	}
+	for _, buf := range buffers {
+		if err := conn.WriteMessage(ws.BinaryMessage, buf); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func (c *Client) readLoop() {
+func (c *Client) readLoop(conn *ws.Conn) {
 	for {
-		mt, data, err := c.ws.ReadMessage()
+		mt, data, err := conn.ReadMessage()
 		if err != nil {
 			c.finishConnect(errors.New("client: connection closed before connect"))
+			c.handleDisconnect()
 			return
+		}
+		if mt == ws.BinaryMessage {
+			c.handleBinaryAttachment(data)
+			continue
 		}
 		if mt != ws.TextMessage {
 			continue
@@ -200,12 +296,28 @@ func (c *Client) readLoop() {
 		}
 		switch ep.Type {
 		case engineio.Ping:
-			_ = c.ws.WriteText(engineio.Packet{Type: engineio.Pong, Data: ep.Data}.Encode())
+			_ = conn.WriteText(engineio.Packet{Type: engineio.Pong, Data: ep.Data}.Encode())
 		case engineio.Message:
 			c.handleSioPacket(ep.Data)
 		case engineio.Close:
+			c.handleDisconnect()
 			return
 		}
+	}
+}
+
+// handleDisconnect fails any pending acks and, when reconnection is enabled and
+// the client was not closed by the user, starts the reconnect loop.
+func (c *Client) handleDisconnect() {
+	c.mu.Lock()
+	closed := c.closed
+	reconnect := c.opts.Reconnection && !closed
+	c.mu.Unlock()
+	// In-flight EmitWithAck calls unblock via their own timeout.
+
+	c.fireLocal("disconnect")
+	if reconnect {
+		go c.reconnectLoop()
 	}
 }
 
@@ -232,18 +344,64 @@ func (c *Client) handleSioPacket(raw string) {
 			}
 		}
 		c.finishConnect(errors.New("client: " + msg))
-	case socketio.Event, socketio.BinaryEvent:
+	case socketio.Event:
 		c.dispatch(pkt)
-	case socketio.Ack, socketio.BinaryAck:
-		if pkt.ID != nil {
+	case socketio.Ack:
+		c.resolveAck(pkt)
+	case socketio.BinaryEvent, socketio.BinaryAck:
+		if pkt.Attachments() > 0 {
 			c.mu.Lock()
-			ch := c.pendingAcks[*pkt.ID]
-			delete(c.pendingAcks, *pkt.ID)
+			c.pendingBin = &pendingBinary{packet: pkt, need: pkt.Attachments()}
 			c.mu.Unlock()
-			if ch != nil {
-				ch <- pkt.Args()
-			}
+			return
 		}
+		c.dispatchBinary(pkt)
+	}
+}
+
+// handleBinaryAttachment collects an inbound binary buffer and dispatches once
+// all attachments for the pending packet have arrived.
+func (c *Client) handleBinaryAttachment(buf []byte) {
+	c.mu.Lock()
+	pb := c.pendingBin
+	if pb == nil {
+		c.mu.Unlock()
+		return
+	}
+	pb.buffers = append(pb.buffers, buf)
+	if len(pb.buffers) < pb.need {
+		c.mu.Unlock()
+		return
+	}
+	c.pendingBin = nil
+	c.mu.Unlock()
+
+	pkt := pb.packet
+	pkt.Data = socketio.Reconstruct(pkt.Data, pb.buffers)
+	c.dispatchBinary(pkt)
+}
+
+// dispatchBinary routes a reassembled binary packet as an event or ack.
+func (c *Client) dispatchBinary(pkt socketio.Packet) {
+	if pkt.Type == socketio.BinaryEvent {
+		pkt.Type = socketio.Event
+		c.dispatch(pkt)
+		return
+	}
+	pkt.Type = socketio.Ack
+	c.resolveAck(pkt)
+}
+
+func (c *Client) resolveAck(pkt socketio.Packet) {
+	if pkt.ID == nil {
+		return
+	}
+	c.mu.Lock()
+	ch := c.pendingAcks[*pkt.ID]
+	delete(c.pendingAcks, *pkt.ID)
+	c.mu.Unlock()
+	if ch != nil {
+		ch <- pkt.Args()
 	}
 }
 
