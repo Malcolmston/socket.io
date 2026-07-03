@@ -116,6 +116,42 @@ s.To("room42").Emit("news", payload)           // members except the sender
 io.Of("/admin").To("ops").Emit("alert", data)  // per-namespace
 ```
 
+## Connection middleware
+
+Gate connections with `Use` (the equivalent of `io.use`). Calling `next(err)`
+rejects the connection with a `connect_error`:
+
+```go
+io.Use(func(s *socketio.Socket, next func(error)) {
+	if s.Auth() == nil {
+		next(errors.New("unauthorized"))
+		return
+	}
+	next(nil)
+})
+io.Of("/admin").Use(adminOnly) // per-namespace middleware
+```
+
+## Go client
+
+A Go client ships in [`client`](client/), built on the same transport stack:
+
+```go
+import "github.com/malcolmston/socketio/client"
+
+c, _ := client.Dial("http://localhost:3000")
+defer c.Close()
+
+c.On("news", func(args []any) []any { fmt.Println(args); return nil })
+c.Emit("hello", "world")
+
+reply, _ := c.EmitWithAck("ping", 5*time.Second) // blocks for the ack
+```
+
+The server side can likewise request an acknowledgement and block for it with
+`socket.EmitAck(event, timeout, args...)`. `Server.Close()` disconnects all
+sessions.
+
 ## Transports
 
 - **HTTP long-polling** — the default the JS client opens with; fully supported

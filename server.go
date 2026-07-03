@@ -163,6 +163,26 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Use registers connection middleware on the default namespace.
+func (s *Server) Use(fn func(socket *Socket, next func(err error))) *Server {
+	s.Of("/").Use(fn)
+	return s
+}
+
+// Close disconnects every connected session and shuts the server down. It does
+// not stop the underlying http.Server (the caller owns that).
+func (s *Server) Close() {
+	s.mu.Lock()
+	conns := make([]*conn, 0, len(s.conns))
+	for _, c := range s.conns {
+		conns = append(conns, c)
+	}
+	s.mu.Unlock()
+	for _, c := range conns {
+		s.removeConn(c)
+	}
+}
+
 // getConn returns the session for a sid, or nil.
 func (s *Server) getConn(sid string) *conn {
 	s.mu.RLock()

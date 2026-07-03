@@ -7,6 +7,7 @@ package ws
 
 import (
 	"bufio"
+	"crypto/rand"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
@@ -15,6 +16,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"sync"
 )
@@ -45,11 +47,15 @@ const (
 // ErrClosed is returned once the connection has been closed.
 var ErrClosed = errors.New("ws: connection closed")
 
-// Conn is an accepted WebSocket connection.
+// Conn is a WebSocket connection (server- or client-side).
 type Conn struct {
 	conn net.Conn
 	br   *bufio.Reader
 	bw   *bufio.Writer
+
+	// client is true for connections created by Dial; client-to-server frames
+	// must be masked per RFC 6455.
+	client bool
 
 	writeMu sync.Mutex
 	closeMu sync.Mutex
@@ -228,21 +234,45 @@ func (c *Conn) writeFrame(opcode byte, data []byte) error {
 
 	var header []byte
 	b0 := byte(0x80) | opcode // FIN + opcode
+	maskBit := byte(0)
+	if c.client {
+		maskBit = 0x80
+	}
 	n := len(data)
 	switch {
 	case n < 126:
-		header = []byte{b0, byte(n)}
+		header = []byte{b0, maskBit | byte(n)}
 	case n < 65536:
-		header = []byte{b0, 126, 0, 0}
+		header = []byte{b0, maskBit | 126, 0, 0}
 		binary.BigEndian.PutUint16(header[2:], uint16(n))
 	default:
 		header = make([]byte, 10)
 		header[0] = b0
-		header[1] = 127
+		header[1] = maskBit | 127
 		binary.BigEndian.PutUint64(header[2:], uint64(n))
 	}
 	if _, err := c.bw.Write(header); err != nil {
 		return err
+	}
+	if c.client {
+		// Mask the payload with a fresh random key (RFC 6455 §5.3).
+		var key [4]byte
+		if _, err := rand.Read(key[:]); err != nil {
+			return err
+		}
+		if _, err := c.bw.Write(key[:]); err != nil {
+			return err
+		}
+		masked := make([]byte, n)
+		for i := range data {
+			masked[i] = data[i] ^ key[i%4]
+		}
+		if n > 0 {
+			if _, err := c.bw.Write(masked); err != nil {
+				return err
+			}
+		}
+		return c.bw.Flush()
 	}
 	if n > 0 {
 		if _, err := c.bw.Write(data); err != nil {
@@ -250,6 +280,69 @@ func (c *Conn) writeFrame(opcode byte, data []byte) error {
 		}
 	}
 	return c.bw.Flush()
+}
+
+// Dial opens a client WebSocket connection to a ws:// or http:// URL. The
+// returned Conn masks outgoing frames as required for clients.
+func Dial(rawURL string, header http.Header) (*Conn, error) {
+	u, err := neturl.Parse(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	host := u.Host
+	if u.Port() == "" {
+		if u.Scheme == "wss" || u.Scheme == "https" {
+			host += ":443"
+		} else {
+			host += ":80"
+		}
+	}
+	conn, err := net.Dial("tcp", host)
+	if err != nil {
+		return nil, err
+	}
+
+	var keyRaw [16]byte
+	if _, err := rand.Read(keyRaw[:]); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	key := base64.StdEncoding.EncodeToString(keyRaw[:])
+
+	reqPath := u.RequestURI()
+	var b strings.Builder
+	b.WriteString("GET " + reqPath + " HTTP/1.1\r\n")
+	b.WriteString("Host: " + u.Host + "\r\n")
+	b.WriteString("Upgrade: websocket\r\n")
+	b.WriteString("Connection: Upgrade\r\n")
+	b.WriteString("Sec-WebSocket-Key: " + key + "\r\n")
+	b.WriteString("Sec-WebSocket-Version: 13\r\n")
+	for k, vs := range header {
+		for _, v := range vs {
+			b.WriteString(k + ": " + v + "\r\n")
+		}
+	}
+	b.WriteString("\r\n")
+	if _, err := conn.Write([]byte(b.String())); err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, &http.Request{Method: "GET"})
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		conn.Close()
+		return nil, fmt.Errorf("ws: unexpected handshake status %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Sec-WebSocket-Accept"); got != acceptKey(key) {
+		conn.Close()
+		return nil, errors.New("ws: bad Sec-WebSocket-Accept")
+	}
+	return &Conn{conn: conn, br: br, bw: bufio.NewWriter(conn), client: true}, nil
 }
 
 // Close sends a close frame and tears down the connection.

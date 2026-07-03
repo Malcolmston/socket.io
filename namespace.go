@@ -13,6 +13,41 @@ type Namespace struct {
 	sockets      map[string]*Socket            // by socket id
 	rooms        map[string]map[string]*Socket // room -> socket id -> socket
 	connHandlers []func(*Socket)
+	middleware   []func(*Socket, func(error))
+}
+
+// Use registers connection middleware for the namespace. Each middleware runs
+// for every incoming connection before the connection handler; calling next
+// with a non-nil error rejects the connection with a CONNECT_ERROR carrying the
+// error's message — the equivalent of io.use((socket, next) => ...).
+func (ns *Namespace) Use(fn func(socket *Socket, next func(err error))) *Namespace {
+	ns.mu.Lock()
+	ns.middleware = append(ns.middleware, fn)
+	ns.mu.Unlock()
+	return ns
+}
+
+// runMiddleware executes the namespace middleware chain for a socket, returning
+// the first error raised (or nil when all middleware pass).
+func (ns *Namespace) runMiddleware(s *Socket) error {
+	ns.mu.RLock()
+	chain := append([]func(*Socket, func(error)){}, ns.middleware...)
+	ns.mu.RUnlock()
+
+	var runErr error
+	for _, mw := range chain {
+		called := false
+		mw(s, func(err error) {
+			called = true
+			runErr = err
+		})
+		if !called || runErr != nil {
+			// A middleware that never calls next() halts the chain; a non-nil
+			// error rejects the connection.
+			break
+		}
+	}
+	return runErr
 }
 
 func newNamespace(server *Server, name string) *Namespace {

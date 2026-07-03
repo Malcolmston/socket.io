@@ -112,6 +112,18 @@ func (c *conn) handleConnect(pkt Packet) {
 		return
 	}
 	socket := ns.add(c, pkt.Namespace, pkt.Data)
+
+	// Run connection middleware; a raised error rejects the connection.
+	if err := ns.runMiddleware(socket); err != nil {
+		ns.remove(socket)
+		_ = c.sendPacket(Packet{
+			Type:      ConnectError,
+			Namespace: pkt.Namespace,
+			Data:      map[string]any{"message": err.Error()},
+		})
+		return
+	}
+
 	c.mu.Lock()
 	c.sockets[pkt.Namespace] = socket
 	c.mu.Unlock()
@@ -130,7 +142,10 @@ func (c *conn) handleEvent(pkt Packet) {
 	socket := c.sockets[pkt.Namespace]
 	c.mu.Unlock()
 	if socket != nil {
-		socket.dispatch(pkt)
+		// Dispatch off the transport read loop so a handler may block on an
+		// acknowledgement (EmitAck) without preventing the loop from reading
+		// the very ACK it is waiting for.
+		go socket.dispatch(pkt)
 	}
 }
 

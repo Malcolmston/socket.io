@@ -1,7 +1,9 @@
 package socketio
 
 import (
+	"errors"
 	"sync"
+	"time"
 )
 
 // EventHandler handles an inbound event. It receives the event arguments and
@@ -90,6 +92,23 @@ func (s *Socket) EmitWithAck(event string, ackFn func(args []any), args ...any) 
 	s.mu.Unlock()
 	return s.conn.sendPacket(newEvent(s.namespace.name, event, args, &id))
 }
+
+// EmitAck sends an event and blocks until the client acknowledges it or timeout
+// elapses, returning the acknowledgement arguments.
+func (s *Socket) EmitAck(event string, timeout time.Duration, args ...any) ([]any, error) {
+	ch := make(chan []any, 1)
+	if err := s.EmitWithAck(event, func(reply []any) { ch <- reply }, args...); err != nil {
+		return nil, err
+	}
+	select {
+	case reply := <-ch:
+		return reply, nil
+	case <-time.After(timeout):
+		return nil, errAckTimeout
+	}
+}
+
+var errAckTimeout = errors.New("socketio: ack timeout")
 
 // dispatch delivers an inbound event to the registered handlers, replying with
 // an ACK when the packet requested one.
