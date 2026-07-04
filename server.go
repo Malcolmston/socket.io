@@ -66,6 +66,7 @@ type Server struct {
 	namespaces     map[string]*Namespace
 	conns          map[string]*conn // engine.io sessions by sid
 	serverHandlers map[string][]func([]any)
+	broadcaster    Broadcaster
 }
 
 // New creates a Server. An optional Options may be supplied.

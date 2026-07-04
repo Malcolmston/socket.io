@@ -1,5 +1,7 @@
 package socketio
 
+import "encoding/json"
+
 // BroadcastOperator emits events to a filtered set of sockets in a namespace —
 // optionally scoped to one or more rooms and excluding specific sockets. It is
 // returned by Namespace.To, Server.To, and Socket.To, and is the equivalent of
@@ -45,14 +47,42 @@ func (b *BroadcastOperator) Except(socketID string) *BroadcastOperator {
 	return b
 }
 
-// Emit sends an event to every socket matched by the operator.
+// Emit sends an event to every socket matched by the operator. When a cluster
+// Broadcaster is installed, the broadcast is published to all nodes (which each
+// deliver it to their local sockets); otherwise it is delivered locally.
 func (b *BroadcastOperator) Emit(event string, args ...any) {
+	if bc := b.ns.server.broadcaster; bc != nil {
+		msg := broadcastMessage{
+			Namespace: b.ns.name,
+			Rooms:     b.rooms,
+			Except:    exceptKeys(b.except),
+			Event:     event,
+			Args:      args,
+		}
+		if data, err := json.Marshal(msg); err == nil {
+			_ = bc.Publish(data)
+			return
+		}
+	}
+	b.emitLocal(event, args...)
+}
+
+// emitLocal delivers the broadcast to this node's local sockets only.
+func (b *BroadcastOperator) emitLocal(event string, args ...any) {
 	for _, s := range b.targets() {
 		if _, skip := b.except[s.id]; skip {
 			continue
 		}
 		_ = s.Emit(event, args...)
 	}
+}
+
+func exceptKeys(m map[string]struct{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 // targets resolves the set of sockets the operator addresses, de-duplicated by

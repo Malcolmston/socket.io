@@ -229,6 +229,23 @@ Rooms are stored behind a pluggable `Adapter` (`ns.SetAdapter`); the default is
 in-process. Broadcast flags `io.To("r").Volatile().Compress(false).Emit(...)`
 are supported (advisory on this single-node implementation).
 
+## Scaling out with Redis
+
+For multiple server instances, install a `Broadcaster` so broadcasts fan out
+across nodes. The [`redis`](redis/) subpackage provides one, speaking the Redis
+pub/sub protocol directly (no third-party client):
+
+```go
+import "github.com/malcolmston/socketio/redis"
+
+bc, _ := redis.New(redis.Options{Addr: "localhost:6379", Channel: "socket.io"})
+io.SetBroadcaster(bc)
+```
+
+With a broadcaster installed, `io.To(room).Emit(...)` on any node is delivered
+to matching sockets on **every** node. `Broadcaster` is a small interface
+(`Publish` / `OnMessage` / `Close`), so any pub/sub transport can back it.
+
 ## Transports
 
 - **HTTP long-polling** — the default the JS client opens with; fully supported

@@ -425,9 +425,20 @@ func (c *Client) dispatch(pkt socketio.Packet) {
 }
 
 func (c *Client) finishConnect(err error) {
-	c.connectOnce.Do(func() {
+	// Snapshot the once/channel under the lock so a concurrent reconnect (which
+	// swaps them in establish) can't race with this signal.
+	c.mu.Lock()
+	once := c.connectOnce
+	ch := c.connectedCh
+	c.mu.Unlock()
+	if once == nil {
+		return
+	}
+	once.Do(func() {
+		c.mu.Lock()
 		c.connErr = err
-		close(c.connectedCh)
+		c.mu.Unlock()
+		close(ch)
 	})
 }
 
