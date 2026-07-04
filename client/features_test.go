@@ -118,6 +118,37 @@ func TestServerSocketsJoinAndBroadcast(t *testing.T) {
 	}
 }
 
+func TestSocketDataStore(t *testing.T) {
+	url, closeFn := serve(t, func(io *socketio.Server) {
+		io.OnConnection(func(s *socketio.Socket) {
+			// Attach session-like state on connect.
+			s.Set("user", "ada").Set("visits", 0)
+			s.On("whoami", func(args []any) []any {
+				// Read and mutate stored data across events.
+				v, _ := s.Get("visits")
+				s.Set("visits", int(v.(int))+1)
+				return []any{s.GetString("user"), s.Data()["visits"]}
+			})
+		})
+	})
+	defer closeFn()
+
+	c, err := client.Dial(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	r1, _ := c.EmitWithAck("whoami", 2*time.Second)
+	if len(r1) != 2 || r1[0] != "ada" || r1[1] != float64(1) {
+		t.Fatalf("first whoami = %v", r1)
+	}
+	r2, _ := c.EmitWithAck("whoami", 2*time.Second)
+	if r2[1] != float64(2) {
+		t.Fatalf("data did not persist across events: %v", r2)
+	}
+}
+
 func TestServerSideEmit(t *testing.T) {
 	io := socketio.New()
 	got := make(chan []any, 1)

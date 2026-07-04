@@ -94,6 +94,27 @@ s.OnDisconnect(func(reason string){})
 s.Disconnect(true)                   // force-disconnect
 ```
 
+### Per-socket data (session-like state)
+
+Attach arbitrary state to a socket for the lifetime of the connection — the
+equivalent of `socket.data`:
+
+```go
+io.OnConnection(func(s *socketio.Socket) {
+	s.Set("user", currentUser).Set("tenant", "acme")
+
+	s.On("action", func(args []any) []any {
+		user := s.GetString("user")
+		v, _ := s.Get("tenant")
+		_ = v
+		return nil
+	})
+})
+```
+
+`s.Set`, `s.Get`, `s.GetString`, `s.Delete`, and `s.Data()` manage the store;
+it is concurrency-safe.
+
 ### Handlers & acknowledgements
 
 An event handler receives the event arguments and returns an optional

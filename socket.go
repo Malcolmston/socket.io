@@ -27,6 +27,7 @@ type Socket struct {
 	ackCounter         uint64
 	pendingAcks        map[uint64]func([]any)
 	disconnected       bool
+	data               map[string]any
 }
 
 // ID returns the socket's unique identifier.
@@ -34,6 +35,56 @@ func (s *Socket) ID() string { return s.id }
 
 // Auth returns the authentication payload the client sent with CONNECT.
 func (s *Socket) Auth() any { return s.auth }
+
+// Set stores an arbitrary value on the socket, persisting for the lifetime of
+// the connection — the equivalent of Socket.IO's socket.data. Use it to attach
+// session-like state (the authenticated user, a tenant id, ...).
+func (s *Socket) Set(key string, value any) *Socket {
+	s.mu.Lock()
+	if s.data == nil {
+		s.data = make(map[string]any)
+	}
+	s.data[key] = value
+	s.mu.Unlock()
+	return s
+}
+
+// Get returns a value previously stored with Set, and whether it was present.
+func (s *Socket) Get(key string) (any, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.data[key]
+	return v, ok
+}
+
+// GetString returns a stored string value, or "" if missing / not a string.
+func (s *Socket) GetString(key string) string {
+	if v, ok := s.Get(key); ok {
+		if str, ok := v.(string); ok {
+			return str
+		}
+	}
+	return ""
+}
+
+// Delete removes a stored value.
+func (s *Socket) Delete(key string) *Socket {
+	s.mu.Lock()
+	delete(s.data, key)
+	s.mu.Unlock()
+	return s
+}
+
+// Data returns a copy of all values stored on the socket.
+func (s *Socket) Data() map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]any, len(s.data))
+	for k, v := range s.data {
+		out[k] = v
+	}
+	return out
+}
 
 // Namespace returns the namespace this socket belongs to.
 func (s *Socket) Namespace() *Namespace { return s.namespace }
