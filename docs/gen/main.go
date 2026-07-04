@@ -356,6 +356,15 @@ func writeType(b *strings.Builder, p pkgInfo, t *doc.Type) {
 	if strings.TrimSpace(t.Doc) != "" {
 		b.WriteString(`<div class="doc">` + html.EscapeString(t.Doc) + `</div>`)
 	}
+	// Constants and variables that go/doc groups under this type (e.g. an
+	// enum's `const (...)` block, or package-level vars of the type) — without
+	// these the reference would be incomplete.
+	for _, c := range t.Consts {
+		writeValue(b, p, c)
+	}
+	for _, v := range t.Vars {
+		writeValue(b, p, v)
+	}
 	for _, fn := range t.Funcs {
 		writeFunc(b, p, fn)
 	}
