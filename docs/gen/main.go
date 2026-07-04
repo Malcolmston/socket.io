@@ -172,13 +172,11 @@ const style = `
   --link:#7db3ff; --grad:linear-gradient(120deg,#6ea8ff,#a58bff);
   --radius-sm:14px; --blur:saturate(180%) blur(30px); --hi:inset 0 1px 0 rgba(255,255,255,.16);
 }
-@media (prefers-color-scheme: light){
-  :root{
-    --bg:#f5f5f7; --glass:rgba(255,255,255,.6); --glass-2:rgba(255,255,255,.75);
-    --edge:rgba(255,255,255,.7); --edge-2:rgba(0,0,0,.08); --code-bg:rgba(255,255,255,.72);
-    --fg:#1d1d1f; --fg-muted:#4b4f57; --fg-dim:#86868b; --link:#0066cc;
-    --hi:inset 0 1px 0 rgba(255,255,255,.9);
-  }
+:root[data-theme="light"]{
+  --bg:#f5f5f7; --glass:rgba(255,255,255,.6); --glass-2:rgba(255,255,255,.75);
+  --edge:rgba(255,255,255,.7); --edge-2:rgba(0,0,0,.08); --code-bg:rgba(255,255,255,.72);
+  --fg:#1d1d1f; --fg-muted:#4b4f57; --fg-dim:#86868b; --link:#0066cc;
+  --hi:inset 0 1px 0 rgba(255,255,255,.9);
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
@@ -194,7 +192,7 @@ body::after{content:"";position:fixed;inset:-30%;z-index:-1;pointer-events:none;
   animation:flow 30s ease-in-out infinite alternate}
 @keyframes flow{0%{transform:translate3d(0,0,0) scale(1)}50%{transform:translate3d(-3%,3%,0) scale(1.1)}100%{transform:translate3d(3%,-2%,0) scale(1.05)}}
 @media (prefers-reduced-motion:reduce){body::after{animation:none}}
-@media (prefers-color-scheme: light){body::after{opacity:.4}}
+:root[data-theme="light"] body::after{opacity:.4}
 a{color:var(--link);text-decoration:none}
 a:hover{opacity:.82}
 code,pre{font-family:"SF Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.88em}
@@ -208,6 +206,10 @@ header.nav{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--b
   color:#03121b;font-weight:800;font-size:.72rem;box-shadow:0 6px 16px -6px rgba(110,168,255,.7)}
 .brand .sub{color:var(--fg-dim);font-weight:500}
 .nav-ctx{margin-left:auto;color:var(--fg-dim);font-size:.85rem;font-family:"SF Mono",monospace;word-break:break-all}
+.tbtn{flex:none;margin-left:.6rem;width:34px;height:34px;border-radius:999px;border:1px solid var(--edge);
+  background:var(--glass);backdrop-filter:var(--blur);color:var(--fg);cursor:pointer;font-size:.9rem;
+  display:inline-flex;align-items:center;justify-content:center;box-shadow:var(--hi)}
+.tbtn:hover{border-color:var(--edge-2)}
 main.wrap{padding-top:2.4rem;padding-bottom:6rem}
 h1{font-size:2rem;letter-spacing:-.03em;margin:.35rem 0 .3rem;font-weight:600;overflow-wrap:anywhere}
 h1 .cmd{font-size:.68rem;font-weight:600;vertical-align:middle;margin-left:.5rem;padding:.15rem .55rem;border-radius:999px;
@@ -237,11 +239,16 @@ footer a{color:var(--fg-muted)}
 `
 
 func page(title, body string) string {
-	return "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">" +
+	return "<!doctype html><html lang=\"en\" data-theme=\"dark\"><head><meta charset=\"utf-8\">" +
 		"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
 		"<title>" + html.EscapeString(title) + "</title><style>" + style + "</style></head><body>" +
-		body + "</body></html>"
+		body + themeScript + "</body></html>"
 }
+
+// themeScript mirrors the landing page's toggle and shares the "mgo-theme"
+// preference (all sites live on the same github.io origin), so a visitor's
+// light/dark choice carries across the whole family. Default is dark.
+const themeScript = `<script>(function(){var r=document.documentElement,k="mgo-theme",s=localStorage.getItem(k);if(s)r.setAttribute("data-theme",s);var b=document.getElementById("tbtn");if(b)b.addEventListener("click",function(){var n=r.getAttribute("data-theme")==="dark"?"light":"dark";r.setAttribute("data-theme",n);localStorage.setItem(k,n);});})();</script>`
 
 func writeIndex(out, title, modPath string, pkgs []pkgInfo) error {
 	var b strings.Builder
@@ -374,6 +381,7 @@ func navbar(modPath string) string {
 	return `<header class="nav"><div class="nav-inner">` +
 		`<a class="brand" href="https://malcolmston.github.io/go/"><span class="logo">go</span>malcolmston<span class="sub">/go</span></a>` +
 		`<span class="nav-ctx">` + html.EscapeString(modPath) + `</span>` +
+		`<button class="tbtn" id="tbtn" title="Toggle theme" aria-label="Toggle theme">◐</button>` +
 		`</div></header>`
 }
 
