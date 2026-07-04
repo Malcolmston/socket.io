@@ -4,46 +4,65 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  build-test:
-    name: build & test (go ${{ matrix.go }})
+  test:
+    name: build · test · coverage (go ${{ matrix.go }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         go: ["1.23", "1.24"]
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go }}
           cache: true
-
-      - name: Verify gofmt
+      - name: gofmt
         run: |
           unformatted="$(gofmt -l .)"
-          if [ -n "$unformatted" ]; then
-            echo "The following files are not gofmt-formatted:"
-            echo "$unformatted"
-            exit 1
-          fi
-
+          if [ -n "$unformatted" ]; then echo "not gofmt-ed:"; echo "$unformatted"; exit 1; fi
       - name: go vet
         run: go vet ./...
-
-      - name: Build
-        run: go build ./...
-
-      - name: Test (race + coverage)
+      - name: Test (race) + coverage
         run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Coverage total
+        run: go tool cover -func=coverage.out | tail -n1
+      - name: Upload coverage report
+        if: matrix.go == '1.24'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
 
-      - name: Coverage summary
-        run: go tool cover -func=coverage.out | tail -1
+  lint:
+    name: lint (golangci-lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.5.0
+
+  vuln:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...

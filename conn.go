@@ -235,13 +235,6 @@ func (c *conn) handleDisconnect(pkt Packet) {
 	}
 }
 
-// socketFor returns the socket bound to a namespace on this session.
-func (c *conn) socketFor(nsp string) *Socket {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.sockets[nsp]
-}
-
 // startPing launches the server heartbeat for this session.
 func (c *conn) startPing() {
 	c.pingOnce.Do(func() {

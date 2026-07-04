@@ -108,12 +108,12 @@ func (c *Client) establish() error {
 	// First frame must be the Engine.IO OPEN packet.
 	mt, data, err := conn.ReadMessage()
 	if err != nil || mt != ws.TextMessage {
-		conn.Close()
+		_ = conn.Close()
 		return errors.New("client: expected OPEN packet")
 	}
 	openPkt, err := engineio.Decode(string(data))
 	if err != nil || openPkt.Type != engineio.Open {
-		conn.Close()
+		_ = conn.Close()
 		return errors.New("client: malformed OPEN packet")
 	}
 
@@ -131,7 +131,7 @@ func (c *Client) establish() error {
 		connect.Data = c.opts.Auth
 	}
 	if err := c.sendPacket(connect); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return err
 	}
 
@@ -141,12 +141,12 @@ func (c *Client) establish() error {
 		e := c.connErr
 		c.mu.Unlock()
 		if e != nil {
-			conn.Close()
+			_ = conn.Close()
 			return e
 		}
 		return nil
 	case <-time.After(c.opts.DialTimeout):
-		conn.Close()
+		_ = conn.Close()
 		return errors.New("client: connect timeout")
 	}
 }

@@ -135,7 +135,7 @@ func (c *Conn) ReadMessage() (MessageType, []byte, error) {
 			continue
 		case opClose:
 			_ = c.writeFrame(opClose, data)
-			c.closeConn()
+			_ = c.closeConn()
 			return 0, nil, ErrClosed
 		case opText, opBinary:
 			if started {

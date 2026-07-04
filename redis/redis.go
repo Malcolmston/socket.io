@@ -81,7 +81,7 @@ func New(opts Options) (*Broadcaster, error) {
 	// Subscribe on the sub connection and start the receive loop.
 	subRW := bufio.NewReadWriter(bufio.NewReader(sub), bufio.NewWriter(sub))
 	if err := writeCommand(subRW.Writer, "SUBSCRIBE", opts.Channel); err != nil {
-		b.Close()
+		_ = b.Close()
 		return nil, err
 	}
 	go b.readLoop(subRW.Reader)
