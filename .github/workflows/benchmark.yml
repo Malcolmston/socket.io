@@ -26,7 +26,7 @@ jobs:
       - name: Run benchmarks
         run: go test -run '^$' -bench=. -benchmem ./... | tee bench.txt
       - name: Upload results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmarks
           path: bench.txt
