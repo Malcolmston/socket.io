@@ -1,0 +1,24 @@
+name: Race (nightly)
+
+# Runs the full test suite under the race detector on a schedule. Concurrency
+# bugs are timing-dependent, so a nightly re-run catches races that a single
+# PR run can miss. Not a PR gate — this is a drift/flake sentinel.
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Test with the race detector
+        run: go test -race -count=1 ./...
