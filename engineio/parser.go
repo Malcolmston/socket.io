@@ -36,6 +36,8 @@ const (
 	Noop
 )
 
+// String returns the lowercase Engine.IO name of the packet type (e.g.
+// "message", "ping"), or "unknown" for an unrecognized value.
 func (t PacketType) String() string {
 	switch t {
 	case Open:
@@ -63,6 +65,7 @@ const separator = "\x1e"
 
 // Packet is a single Engine.IO packet.
 type Packet struct {
+	// Type is the Engine.IO packet type (Open, Message, Ping, ...).
 	Type PacketType
 	// Data is the textual payload for string packets.
 	Data string

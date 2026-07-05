@@ -31,6 +31,8 @@ const (
 	BinaryAck
 )
 
+// String returns the Socket.IO name of the packet type (e.g. "EVENT", "ACK"),
+// or "UNKNOWN" for an unrecognized value.
 func (t PacketType) String() string {
 	switch t {
 	case Connect:
@@ -54,9 +56,13 @@ func (t PacketType) String() string {
 
 // Packet is a decoded Socket.IO protocol packet.
 type Packet struct {
-	Type      PacketType
-	Namespace string // defaults to "/"
-	ID        *uint64
+	// Type is the packet's Socket.IO type (Connect, Event, Ack, ...).
+	Type PacketType
+	// Namespace the packet targets; defaults to "/".
+	Namespace string
+	// ID is the acknowledgement id when the packet requests or answers an ack;
+	// nil otherwise.
+	ID *uint64
 	// Data is the decoded JSON payload: an array for Event/Ack ([name, args...]
 	// or [args...]) and an object for Connect/ConnectError.
 	Data any
