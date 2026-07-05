@@ -1,23 +1,60 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { DocsView } from '../../../src/components/DocsView';
-import { LIB } from '../../../src/data';
+import type { DocIndex } from 'go-ui';
+
+// A minimal DocIndex the stubbed fetch returns for DocsApp's doc.json request.
+const DOC_INDEX: DocIndex = {
+  module: 'github.com/malcolmston/socketio',
+  packages: [
+    {
+      importPath: 'github.com/malcolmston/socketio',
+      name: 'socketio',
+      synopsis: 'Package socketio is a Socket.IO server and client.',
+      doc: 'Package socketio is a Socket.IO server and client.',
+      consts: [],
+      vars: [],
+      types: [
+        {
+          name: 'Server',
+          signature: 'type Server struct{}',
+          doc: 'Server is a Socket.IO server.',
+          consts: [],
+          vars: [],
+          funcs: [],
+          methods: [],
+        },
+      ],
+      funcs: [{ name: 'NewServer', signature: 'func NewServer() *Server', doc: 'NewServer creates a server.' }],
+    },
+  ],
+};
 
 describe('DocsView', () => {
-  it('renders the API reference heading and a link to the generated ./api/ site', () => {
-    const { container } = render(<DocsView />);
-    expect(container.querySelector('#view-docs')).not.toBeNull();
-    expect(screen.getByRole('heading', { level: 2, name: /API reference/ })).toBeInTheDocument();
-    const api = screen.getByRole('link', { name: /Open the API reference/ });
-    expect(api).toHaveAttribute('href', './api/');
-    expect(api).toHaveAttribute('target', '_blank');
-    expect(api).toHaveAttribute('rel', expect.stringContaining('noopener'));
+  beforeEach(() => {
+    // DocsApp fetches doc.json; return the small index. VersionBadge also fetches
+    // (releases) — leave any non-doc request pending so it never resolves.
+    global.fetch = vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes('doc.json')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(DOC_INDEX) } as Response);
+      }
+      return new Promise<Response>(() => {});
+    }) as unknown as typeof fetch;
   });
 
-  it('links to the GitHub source', () => {
-    render(<DocsView />);
-    const gh = screen.getByRole('link', { name: /Source on GitHub/ });
-    expect(gh).toHaveAttribute('href', LIB.repo);
-    expect(gh).toHaveAttribute('target', '_blank');
+  it('renders the inline React API reference from the fetched doc.json', async () => {
+    const { container } = render(<DocsView />);
+    expect(container.querySelector('#view-docs')).not.toBeNull();
+    expect(
+      screen.getByRole('heading', { level: 2, name: /API documentation/ }),
+    ).toBeInTheDocument();
+
+    // DocsApp fetches asynchronously, then renders the package view + symbols.
+    expect(await screen.findByRole('heading', { name: /package socketio/ })).toBeInTheDocument();
+    expect(container.querySelector('#sym-NewServer'), 'func NewServer symbol card').not.toBeNull();
+    expect(container.querySelector('#sym-Server'), 'type Server symbol card').not.toBeNull();
+
+    // The secondary link to the raw generated static HTML remains.
+    expect(screen.getByRole('link', { name: /Raw generated HTML/ })).toHaveAttribute('href', './api/');
   });
 });

@@ -37,7 +37,11 @@ export default defineConfig({
   },
   projects,
   webServer: {
-    command: 'npm run build && npm run preview -- --port 4173 --strictPort',
+    // Generate the API doc.json (consumed by the React Docs tab) into
+    // web/public before building so Vite bundles it into dist/doc.json, then
+    // build and serve the production preview.
+    command:
+      'cd .. && go run ./docs/gen -json web/public/doc.json && cd web && npm run build && npm run preview -- --port 4173 --strictPort',
     url: BASE_URL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

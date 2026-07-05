@@ -13,6 +13,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"go/ast"
@@ -26,12 +27,23 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 func main() {
-	out := flag.String("out", "_site", "output directory")
+	out := flag.String("out", "_site", "output directory for the static HTML site")
+	jsonOut := flag.String("json", "", "if set, write a DocIndex JSON file (consumed by the React docs renderer) to this path")
 	title := flag.String("title", "", "site title (defaults to module path)")
 	flag.Parse()
+
+	// Track whether -out was explicitly requested so a plain `-json <path>`
+	// invocation emits only JSON (and does not also scatter a static _site).
+	outSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "out" {
+			outSet = true
+		}
+	})
 
 	modPath, err := modulePath("go.mod")
 	if err != nil {
@@ -47,21 +59,31 @@ func main() {
 	}
 	sort.Slice(pkgs, func(i, j int) bool { return pkgs[i].ImportPath < pkgs[j].ImportPath })
 
-	if err := os.MkdirAll(*out, 0o755); err != nil {
-		fatal(err)
-	}
-	if err := writeIndex(*out, *title, modPath, pkgs); err != nil {
-		fatal(err)
-	}
-	for _, p := range pkgs {
-		if err := writePackage(*out, *title, modPath, p); err != nil {
+	if *jsonOut != "" {
+		if err := writeJSON(*jsonOut, modPath, pkgs); err != nil {
 			fatal(err)
 		}
+		fmt.Printf("gendocs: wrote %d packages to %s\n", len(pkgs), *jsonOut)
 	}
-	// A .nojekyll file stops GitHub Pages from running the content through
-	// Jekyll (which would drop files/dirs beginning with underscores).
-	_ = os.WriteFile(filepath.Join(*out, ".nojekyll"), nil, 0o644)
-	fmt.Printf("gendocs: wrote %d package pages to %s\n", len(pkgs), *out)
+
+	// Emit the static HTML site unless the caller asked only for JSON.
+	if *jsonOut == "" || outSet {
+		if err := os.MkdirAll(*out, 0o755); err != nil {
+			fatal(err)
+		}
+		if err := writeIndex(*out, *title, modPath, pkgs); err != nil {
+			fatal(err)
+		}
+		for _, p := range pkgs {
+			if err := writePackage(*out, *title, modPath, p); err != nil {
+				fatal(err)
+			}
+		}
+		// A .nojekyll file stops GitHub Pages from running the content through
+		// Jekyll (which would drop files/dirs beginning with underscores).
+		_ = os.WriteFile(filepath.Join(*out, ".nojekyll"), nil, 0o644)
+		fmt.Printf("gendocs: wrote %d package pages to %s\n", len(pkgs), *out)
+	}
 }
 
 // pkgInfo is a documented package.
@@ -98,8 +120,13 @@ func collectPackages(root, modPath string) ([]pkgInfo, error) {
 			return nil
 		}
 		base := info.Name()
+		// Skip infrastructure and non-library trees: the web site and its
+		// vendored submodule, the docs generator itself, examples, test fixtures,
+		// build output, node_modules, and any dotdir. These are not part of the
+		// module's public API surface.
 		if path != root && (base == "testdata" || base == "_site" || base == ".git" ||
-			strings.HasPrefix(base, ".") || base == "node_modules") {
+			strings.HasPrefix(base, ".") || base == "node_modules" ||
+			base == "web" || base == "vendor" || base == "docs" || base == "examples") {
 			return filepath.SkipDir
 		}
 		p, ok := parsePackage(path, root, modPath)
@@ -160,6 +187,131 @@ func modulePath(goMod string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("gendocs: no module directive in %s", goMod)
+}
+
+// ---- JSON emit --------------------------------------------------------------
+
+// The JSON shapes below mirror the DocIndex schema in the shared go-ui docs
+// renderer (ui/src/docs/types.ts). Slices are always non-nil so they marshal to
+// [] rather than null, which the React components consume directly.
+
+type jsonIndex struct {
+	Module      string        `json:"module"`
+	GeneratedAt string        `json:"generatedAt,omitempty"`
+	Packages    []jsonPackage `json:"packages"`
+}
+
+type jsonPackage struct {
+	ImportPath string      `json:"importPath"`
+	Name       string      `json:"name"`
+	Synopsis   string      `json:"synopsis"`
+	Doc        string      `json:"doc"`
+	IsCommand  bool        `json:"isCommand,omitempty"`
+	Consts     []jsonValue `json:"consts"`
+	Vars       []jsonValue `json:"vars"`
+	Types      []jsonType  `json:"types"`
+	Funcs      []jsonFunc  `json:"funcs"`
+}
+
+type jsonType struct {
+	Name      string      `json:"name"`
+	Signature string      `json:"signature"`
+	Doc       string      `json:"doc"`
+	Consts    []jsonValue `json:"consts"`
+	Vars      []jsonValue `json:"vars"`
+	Funcs     []jsonFunc  `json:"funcs"`
+	Methods   []jsonFunc  `json:"methods"`
+}
+
+type jsonFunc struct {
+	Name      string `json:"name"`
+	Recv      string `json:"recv,omitempty"`
+	Signature string `json:"signature"`
+	Doc       string `json:"doc"`
+}
+
+type jsonValue struct {
+	Names     []string `json:"names"`
+	Signature string   `json:"signature"`
+	Doc       string   `json:"doc"`
+}
+
+func writeJSON(path, modPath string, pkgs []pkgInfo) error {
+	idx := jsonIndex{
+		Module:      modPath,
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		Packages:    make([]jsonPackage, 0, len(pkgs)),
+	}
+	for _, p := range pkgs {
+		idx.Packages = append(idx.Packages, jsonPackageOf(p))
+	}
+	data, err := json.MarshalIndent(idx, "", "  ")
+	if err != nil {
+		return err
+	}
+	if dir := filepath.Dir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+func jsonPackageOf(p pkgInfo) jsonPackage {
+	jp := jsonPackage{
+		ImportPath: p.ImportPath,
+		Name:       p.Name(),
+		Synopsis:   p.Synopsis(),
+		Consts:     make([]jsonValue, 0),
+		Vars:       make([]jsonValue, 0),
+		Types:      make([]jsonType, 0),
+		Funcs:      make([]jsonFunc, 0),
+	}
+	if p.Doc == nil {
+		return jp
+	}
+	jp.Doc = p.Doc.Doc
+	jp.IsCommand = p.Doc.Name == "main"
+	jp.Consts = jsonValuesOf(p, p.Doc.Consts)
+	jp.Vars = jsonValuesOf(p, p.Doc.Vars)
+	jp.Funcs = jsonFuncsOf(p, p.Doc.Funcs)
+	for _, t := range p.Doc.Types {
+		jp.Types = append(jp.Types, jsonType{
+			Name:      t.Name,
+			Signature: nodeString(p.Fset, t.Decl),
+			Doc:       t.Doc,
+			Consts:    jsonValuesOf(p, t.Consts),
+			Vars:      jsonValuesOf(p, t.Vars),
+			Funcs:     jsonFuncsOf(p, t.Funcs),
+			Methods:   jsonFuncsOf(p, t.Methods),
+		})
+	}
+	return jp
+}
+
+func jsonValuesOf(p pkgInfo, vals []*doc.Value) []jsonValue {
+	out := make([]jsonValue, 0, len(vals))
+	for _, v := range vals {
+		out = append(out, jsonValue{
+			Names:     v.Names,
+			Signature: nodeString(p.Fset, v.Decl),
+			Doc:       v.Doc,
+		})
+	}
+	return out
+}
+
+func jsonFuncsOf(p pkgInfo, fns []*doc.Func) []jsonFunc {
+	out := make([]jsonFunc, 0, len(fns))
+	for _, fn := range fns {
+		out = append(out, jsonFunc{
+			Name:      fn.Name,
+			Recv:      fn.Recv,
+			Signature: oneLine(nodeString(p.Fset, fn.Decl)),
+			Doc:       fn.Doc,
+		})
+	}
+	return out
 }
 
 // ---- rendering --------------------------------------------------------------

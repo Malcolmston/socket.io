@@ -30,13 +30,13 @@ describe('App', () => {
 
     window.location.hash = '#docs';
     fireEvent(window, new Event('hashchange'));
-    expect(screen.getByRole('heading', { level: 2, name: /API reference/ })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 2, name: /API documentation/ })).toBeInTheDocument();
   });
 
   it('navigates when a nav tab is clicked', () => {
     render(<App />);
     fireEvent.click(screen.getByRole('link', { name: 'Docs' }));
     fireEvent(window, new Event('hashchange'));
-    expect(screen.getByRole('heading', { level: 2, name: /API reference/ })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 2, name: /API documentation/ })).toBeInTheDocument();
   });
 });

@@ -42,12 +42,20 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      # Emit the machine-readable API docs the React "Docs" tab renders. Placed
+      # in web/public so Vite bundles it into dist/doc.json (served at
+      # /socket.io/doc.json).
+      - name: Generate API doc.json
+        run: go run ./docs/gen -json web/public/doc.json
+
       - name: Build landing site
         working-directory: web
         run: |
           npm ci
           npm run build
 
+      # Also publish the standalone static HTML reference at /socket.io/api/ as a
+      # secondary, dependency-free browsable view.
       - name: Generate API docs into web/dist/api
         run: go run ./docs/gen -out web/dist/api
 
