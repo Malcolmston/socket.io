@@ -218,7 +218,8 @@ func TestWriteFrameExtendedLengths(t *testing.T) {
 }
 
 func TestWriteAfterClose(t *testing.T) {
-	c := &Conn{conn: &fakeNetConn{}, bw: bufio.NewWriter(&bytes.Buffer{}), closed: true}
+	c := &Conn{conn: &fakeNetConn{}, bw: bufio.NewWriter(&bytes.Buffer{})}
+	c.closed.Store(true)
 	if err := c.writeFrame(opText, []byte("x")); err != ErrClosed {
 		t.Fatalf("writeFrame after close = %v, want ErrClosed", err)
 	}
