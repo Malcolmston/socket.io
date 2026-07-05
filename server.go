@@ -1,7 +1,9 @@
-// Package socketio is a Go port of the Node.js Socket.IO server. It implements
-// the Engine.IO v4 transport layer (HTTP long-polling and WebSocket, with the
-// polling→websocket upgrade) and the Socket.IO v5 protocol (namespaces, rooms,
-// events, and acknowledgements), exposing an API that mirrors socket.io:
+// Package socketio is a pure-Go port of the Node.js Socket.IO server. It
+// implements the Engine.IO v4 transport layer (HTTP long-polling and WebSocket,
+// with the polling→websocket upgrade) and the Socket.IO v5 protocol (namespaces,
+// rooms, events, and acknowledgements), exposing an API that mirrors the
+// original JavaScript library so that idioms such as io.on("connection"),
+// socket.join(room), and io.to(room).emit(...) translate almost line for line:
 //
 //	io := socketio.New()
 //	io.OnConnection(func(s *socketio.Socket) {
@@ -13,6 +15,50 @@
 //	})
 //	http.Handle("/socket.io/", io)
 //	http.ListenAndServe(":3000", nil)
+//
+// Reach for this package when you want real-time, bidirectional, event-based
+// communication between a Go backend and Socket.IO clients (browsers, mobile
+// apps, or the companion client package) without pulling in cgo or third-party
+// dependencies — the entire stack, down to the RFC 6455 WebSocket framing, is
+// built on the standard library. A *Server is an http.Handler, so it mounts on
+// any net/http server or router: use ServeHTTP directly, Attach it to a
+// *http.ServeMux, or wrap an existing handler with Handler to coexist with a
+// REST/Express-style application on the same port.
+//
+// Internally each connected client owns one Engine.IO session (a conn),
+// identified by a session id (sid). A session begins over HTTP long-polling and
+// is transparently upgraded to WebSocket via the Engine.IO probe handshake; the
+// engineio subpackage encodes the transport frames and the polling payload,
+// while this package encodes the Socket.IO layer on top — CONNECT, EVENT, ACK,
+// DISCONNECT, and their binary variants. Events carry JSON arguments; any
+// []byte in a payload is transmitted out-of-band as a BINARY_EVENT with
+// placeholder markers (see binary.go). A single session may be attached to
+// several Namespaces at once, each of which multiplexes its own sockets, rooms,
+// and connection middleware over the shared transport.
+//
+// The concurrency and delivery semantics follow from that design. The server
+// sends periodic heartbeat pings and disconnects a session whose pong is
+// overdue by more than PingInterval+PingTimeout. Inbound events are dispatched
+// on their own goroutine so a handler may block on an acknowledgement without
+// stalling the read loop, which means handlers for the same socket can run
+// concurrently and must guard any shared state; ordering of delivery to the
+// wire is preserved, but ordering between independently dispatched handlers is
+// not. Socket.Emit targets one client and returns an error, whereas the
+// broadcast forms (Server.Emit, Namespace.Emit, and BroadcastOperator.Emit) fan
+// out to many recipients and deliberately do not surface a per-socket error.
+// Rooms are managed by a pluggable Adapter; the default keeps all membership in
+// process.
+//
+// Parity with the Node reference implementation is close but not total. The
+// wire protocols are compatible, so this server interoperates with the official
+// JavaScript client and this module's client package. Room broadcasting,
+// acknowledgements, connection middleware (Use), per-socket data (Set/Get), and
+// multi-node scale-out (via SetBroadcaster and the redis subpackage) are all
+// supported. Differences reflect Go idioms and scope: handlers use typed
+// func([]any) []any signatures rather than variadic JS callbacks, there is no
+// built-in adapter persistence beyond what a Broadcaster provides, and features
+// tied to the Node runtime (such as the admin UI or the msgpack parser) are out
+// of scope. See COMPATIBILITY.md in the repository for the authoritative matrix.
 package socketio
 
 import (

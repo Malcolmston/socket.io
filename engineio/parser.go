@@ -1,10 +1,44 @@
 // Package engineio implements the Engine.IO v4 protocol codec — the transport
 // framing layer that Socket.IO is built on. It encodes and decodes the small
 // set of Engine.IO packets and the polling "payload" that batches several
-// packets into a single HTTP body.
+// packets into a single HTTP body. Engine.IO is the lower half of the Node.js
+// Socket.IO stack: it establishes and keeps alive a logical connection over an
+// interchangeable transport (HTTP long-polling first, then an upgrade to
+// WebSocket) and provides ordered, heartbeat-monitored delivery of opaque
+// messages. This package is the Go equivalent of that layer's parser/encoder.
 //
-// Engine.IO packet wire format (string): a single-digit type prefix followed by
-// the packet data, e.g. "4hello" is a MESSAGE packet carrying "hello".
+// The wire format is deliberately tiny. A string packet is a single ASCII digit
+// type prefix followed by the packet data — for example "4hello" is a MESSAGE
+// ("4") carrying "hello", "2probe" is a PING with data "probe", and "0{...}" is
+// the OPEN handshake carrying JSON. The seven packet types (Open, Close, Ping,
+// Pong, Message, Upgrade, Noop) are modeled by PacketType and its constants.
+// Encode and Decode convert between a Packet and this string form; that string
+// is exactly what travels inside a WebSocket text frame.
+//
+// Use this package when you need to speak the transport layer directly rather
+// than the higher-level Socket.IO event API: the socketio server uses it to
+// frame outbound messages and to interpret inbound transport packets, and the
+// client package uses it to read the OPEN handshake and answer heartbeats. Most
+// application code never imports engineio directly — it is a building block —
+// but it is exported so alternative transports or tooling can reuse the codec.
+//
+// For HTTP long-polling, several packets are batched into one response body
+// using EncodePayload/DecodePayload, which join packets with the Engine.IO v4
+// record separator (ASCII 0x1e). Binary data is handled two ways: over
+// WebSocket a binary MESSAGE rides in a native binary frame (its Binary field is
+// set and Encode falls back to a base64 "b"-prefixed string only when forced
+// into a text context), while in a polling payload a binary packet is always
+// serialized as "b" + standard-base64. NewMessage and NewOpen are convenience
+// constructors for the two packet types callers build most often.
+//
+// The codec is pure and stateless: functions do not retain the byte slices they
+// return, hold no locks, and perform no I/O, so they are safe to call
+// concurrently. Decode and DecodePayload validate their input and return
+// ErrEmptyPacket or a descriptive error for malformed data rather than
+// panicking. This is a focused implementation of Engine.IO v4 (Protocol == 4)
+// covering exactly what Socket.IO v5 needs; it is not a general transport
+// manager and does not itself open sockets, schedule pings, or negotiate
+// upgrades — those responsibilities live in the socketio and client packages.
 package engineio
 
 import (

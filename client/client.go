@@ -1,10 +1,48 @@
 // Package client is a Go Socket.IO client. It connects to a Socket.IO server
-// (this one or the Node reference server) over the WebSocket transport and
-// provides the familiar On/Emit/EmitWithAck API.
+// (this module's server or the Node reference server) over the WebSocket
+// transport and provides the familiar On/Emit/EmitWithAck API that mirrors the
+// browser socket.io-client, letting a Go process act as a first-class Socket.IO
+// peer rather than merely a server:
 //
 //	c, err := client.Dial("http://localhost:3000")
 //	c.On("news", func(args []any) []any { fmt.Println(args); return nil })
 //	c.Emit("hello", "world")
+//
+// Use it whenever a Go program needs to talk to a Socket.IO endpoint as a
+// client: integration and end-to-end tests against a running server, service-to-
+// service messaging where the other side already speaks Socket.IO, bots and
+// load generators, or bridging a Socket.IO event stream into another system.
+// Dial blocks until the Socket.IO CONNECT handshake for the chosen namespace
+// completes (or DialTimeout elapses), so a successful return means the client is
+// fully connected and ready to Emit. Optional authentication data is sent with
+// the CONNECT packet via Options.Auth, matching the server-side socket.Auth().
+//
+// Under the hood the client speaks Engine.IO v4 directly over a single
+// WebSocket (it does not use HTTP long-polling): it dials ws(s)://.../socket.io/
+// with EIO=4&transport=websocket, reads the Engine.IO OPEN handshake, sends the
+// Socket.IO CONNECT packet, and then runs a background read loop that answers
+// heartbeat pings, dispatches inbound EVENT packets to handlers registered with
+// On, and resolves acknowledgements. Outgoing events are encoded with the shared
+// socketio packet codec, so binary ([]byte) arguments are automatically split
+// into BINARY_EVENT attachment frames and reassembled on receipt.
+//
+// Concurrency and lifecycle: On, Emit, EmitWithAck, and Close are safe to call
+// from multiple goroutines. Handlers run on the read-loop goroutine, so a
+// handler that itself blocks on EmitWithAck should hand off to another goroutine
+// to avoid deadlocking the loop; returning a non-nil slice from a handler
+// acknowledges an event the server sent with an ack id. EmitWithAck waits up to
+// the supplied timeout and returns an error if no acknowledgement arrives. When
+// Options.Reconnection is enabled, an unexpected transport drop triggers an
+// exponential-backoff reconnect loop (ReconnectionDelay doubling up to five
+// seconds, bounded by ReconnectionAttempts) and fires the local "reconnect"
+// event; a user-initiated Close suppresses reconnection.
+//
+// Compared with the JavaScript socket.io-client the surface is intentionally
+// small: one namespace per Client, no long-polling fallback, and lifecycle
+// events surfaced as ordinary events ("disconnect", "reconnect") registered
+// through On. The wire protocol is identical, so this client interoperates with
+// the Node reference server and with this module's server package. For
+// multi-namespace usage, Dial a separate Client per namespace.
 package client
 
 import (
