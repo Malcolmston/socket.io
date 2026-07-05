@@ -1,5 +1,12 @@
 # socket.io
 
+[![CI](https://github.com/Malcolmston/socket.io/actions/workflows/ci.yml/badge.svg)](https://github.com/Malcolmston/socket.io/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/malcolmston/socketio.svg)](https://pkg.go.dev/github.com/malcolmston/socketio)
+[![Go Report Card](https://goreportcard.com/badge/github.com/malcolmston/socketio)](https://goreportcard.com/report/github.com/malcolmston/socketio)
+[![Release](https://img.shields.io/github/v/release/Malcolmston/socket.io?sort=semver)](https://github.com/Malcolmston/socket.io/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-pages-2f9bff)](https://malcolmston.github.io/socket.io/)
+
 **Node's Socket.IO, for Go.**
 
 A dependency-free Go port of the [Socket.IO](https://socket.io/) server. It
