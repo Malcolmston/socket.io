@@ -13,11 +13,13 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"go/ast"
 	"go/doc"
+	"go/format"
 	"go/parser"
 	"go/printer"
 	"go/token"
@@ -140,24 +142,36 @@ func collectPackages(root, modPath string) ([]pkgInfo, error) {
 
 func parsePackage(dir, root, modPath string) (pkgInfo, bool) {
 	fset := token.NewFileSet()
-	parsed, err := parser.ParseDir(fset, dir, func(fi os.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, parser.ParseComments)
+	// Parse every .go file, including _test.go, so that example functions
+	// (ExampleXxx, living in the package's test files) are available to
+	// doc.NewFromFiles and can be surfaced on the docs pages.
+	parsed, err := parser.ParseDir(fset, dir, nil, parser.ParseComments)
 	if err != nil || len(parsed) == 0 {
 		return pkgInfo{}, false
 	}
-	// Choose the non-main, non-test package (skip package main commands only if
-	// they carry no doc; we still document them).
-	var astPkg *ast.Package
+	// Identify the primary (non-test) package name.
+	var primary string
+	for name := range parsed {
+		if !strings.HasSuffix(name, "_test") {
+			primary = name
+			break
+		}
+	}
+	if primary == "" {
+		return pkgInfo{}, false
+	}
+	// Feed doc.NewFromFiles the primary package's files plus its external test
+	// package (<primary>_test) files — the latter is where black-box examples
+	// live. NewFromFiles then associates each ExampleXxx with its package, func,
+	// type, or method.
+	var files []*ast.File
 	for name, ap := range parsed {
-		if strings.HasSuffix(name, "_test") {
+		if name != primary && name != primary+"_test" {
 			continue
 		}
-		astPkg = ap
-		break
-	}
-	if astPkg == nil {
-		return pkgInfo{}, false
+		for _, f := range ap.Files {
+			files = append(files, f)
+		}
 	}
 
 	rel, _ := filepath.Rel(root, dir)
@@ -168,8 +182,13 @@ func parsePackage(dir, root, modPath string) (pkgInfo, bool) {
 	if rel != "" {
 		importPath = modPath + "/" + filepath.ToSlash(rel)
 	}
-	// Mode 0 keeps only exported symbols — this is a public API reference.
-	dpkg := doc.New(astPkg, importPath, 0)
+	// Mode 0 keeps only exported symbols — this is a public API reference. If
+	// NewFromFiles fails for any reason, fall back to exported-only docs without
+	// examples so one odd package can't break the whole run.
+	dpkg, err := doc.NewFromFiles(fset, files, importPath)
+	if err != nil {
+		dpkg = doc.New(parsed[primary], importPath, 0)
+	}
 	return pkgInfo{ImportPath: importPath, Rel: rel, Doc: dpkg, Fset: fset}, true
 }
 
@@ -202,15 +221,27 @@ type jsonIndex struct {
 }
 
 type jsonPackage struct {
-	ImportPath string      `json:"importPath"`
-	Name       string      `json:"name"`
-	Synopsis   string      `json:"synopsis"`
-	Doc        string      `json:"doc"`
-	IsCommand  bool        `json:"isCommand,omitempty"`
-	Consts     []jsonValue `json:"consts"`
-	Vars       []jsonValue `json:"vars"`
-	Types      []jsonType  `json:"types"`
-	Funcs      []jsonFunc  `json:"funcs"`
+	ImportPath string        `json:"importPath"`
+	Name       string        `json:"name"`
+	Synopsis   string        `json:"synopsis"`
+	Doc        string        `json:"doc"`
+	IsCommand  bool          `json:"isCommand,omitempty"`
+	Consts     []jsonValue   `json:"consts"`
+	Vars       []jsonValue   `json:"vars"`
+	Types      []jsonType    `json:"types"`
+	Funcs      []jsonFunc    `json:"funcs"`
+	Examples   []jsonExample `json:"examples,omitempty"`
+}
+
+// jsonExample mirrors the DocExample shape in the shared go-ui docs renderer:
+// a runnable go/doc example with an optional descriptive comment and expected
+// output. Name is the association (e.g. "New" for ExampleNew, "" for a bare
+// package-level Example).
+type jsonExample struct {
+	Name   string `json:"name"`
+	Code   string `json:"code"`
+	Output string `json:"output,omitempty"`
+	Doc    string `json:"doc,omitempty"`
 }
 
 type jsonType struct {
@@ -286,7 +317,104 @@ func jsonPackageOf(p pkgInfo) jsonPackage {
 			Methods:   jsonFuncsOf(p, t.Methods),
 		})
 	}
+	jp.Examples = collectExamples(p)
 	return jp
+}
+
+// collectExamples flattens every ExampleXxx associated with the package — at
+// the package, function, type, and method level — into a single ordered list so
+// the renderer can show them all under one "Examples" section. Each entry's Name
+// records the association (e.g. "New", "Strategy.Authenticate").
+func collectExamples(p pkgInfo) []jsonExample {
+	if p.Doc == nil {
+		return nil
+	}
+	var out []jsonExample
+	seen := map[string]bool{}
+	add := func(exs []*doc.Example) {
+		for _, ex := range exs {
+			code := exampleCode(p.Fset, ex)
+			if strings.TrimSpace(code) == "" || seen[code] {
+				continue
+			}
+			seen[code] = true
+			out = append(out, jsonExample{
+				// Example.Name already carries the full association ("New" for
+				// ExampleNew, "New_withOptions" for ExampleNew_withOptions).
+				Name:   exampleTitle(ex.Name),
+				Code:   code,
+				Output: strings.TrimRight(ex.Output, "\n"),
+				Doc:    ex.Doc,
+			})
+		}
+	}
+	add(p.Doc.Examples)
+	for _, f := range p.Doc.Funcs {
+		add(f.Examples)
+	}
+	for _, t := range p.Doc.Types {
+		add(t.Examples)
+		for _, f := range t.Funcs {
+			add(f.Examples)
+		}
+		for _, m := range t.Methods {
+			add(m.Examples)
+		}
+	}
+	return out
+}
+
+// exampleTitle renders a go/doc example name for display: "New" stays "New",
+// "New_withOptions" becomes "New (with options)", and a bare package example
+// ("") stays empty so the renderer shows just "Example".
+func exampleTitle(name string) string {
+	if name == "" {
+		return ""
+	}
+	if i := strings.IndexByte(name, '_'); i >= 0 {
+		base, suffix := name[:i], strings.ReplaceAll(name[i+1:], "_", " ")
+		if base == "" {
+			return suffix
+		}
+		return base + " (" + suffix + ")"
+	}
+	return name
+}
+
+// exampleCode renders an example to displayable Go source. A self-contained
+// example carries a synthesized runnable file (Play) — preferred, since it
+// includes imports and reads as a full program. Otherwise the raw Code node is
+// formatted and its enclosing block braces stripped.
+func exampleCode(fset *token.FileSet, ex *doc.Example) string {
+	var buf bytes.Buffer
+	if ex.Play != nil {
+		if err := format.Node(&buf, fset, ex.Play); err == nil {
+			return strings.TrimSpace(buf.String())
+		}
+		buf.Reset()
+	}
+	if ex.Code != nil {
+		if err := format.Node(&buf, fset, ex.Code); err == nil {
+			return dedentBlock(buf.String())
+		}
+	}
+	return ""
+}
+
+// dedentBlock turns a formatted `{ ... }` block statement into top-level
+// statements: it drops the outer braces and removes one level of leading
+// indentation so the snippet reads naturally.
+func dedentBlock(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "{") && strings.HasSuffix(s, "}") {
+		s = strings.TrimSuffix(strings.TrimPrefix(s, "{"), "}")
+		lines := strings.Split(s, "\n")
+		for i, ln := range lines {
+			lines[i] = strings.TrimPrefix(ln, "\t")
+		}
+		s = strings.TrimSpace(strings.Join(lines, "\n"))
+	}
+	return s
 }
 
 func jsonValuesOf(p pkgInfo, vals []*doc.Value) []jsonValue {
