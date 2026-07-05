@@ -19,6 +19,7 @@ import (
 	neturl "net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // guid is the RFC 6455 magic value appended to the client key.
@@ -59,7 +60,10 @@ type Conn struct {
 
 	writeMu sync.Mutex
 	closeMu sync.Mutex
-	closed  bool
+	// closed is read by writeFrame (under writeMu) and set by closeConn (under
+	// closeMu); it must be atomic so those two paths don't race when a reader
+	// closes the connection while a writer is mid-flight.
+	closed atomic.Bool
 }
 
 // IsWebSocketUpgrade reports whether r is a WebSocket upgrade request.
@@ -228,7 +232,7 @@ func (c *Conn) WriteText(s string) error {
 func (c *Conn) writeFrame(opcode byte, data []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	if c.closed {
+	if c.closed.Load() {
 		return ErrClosed
 	}
 
@@ -354,10 +358,10 @@ func (c *Conn) Close() error {
 func (c *Conn) closeConn() error {
 	c.closeMu.Lock()
 	defer c.closeMu.Unlock()
-	if c.closed {
+	if c.closed.Load() {
 		return nil
 	}
-	c.closed = true
+	c.closed.Store(true)
 	return c.conn.Close()
 }
 
