@@ -30,7 +30,12 @@ jobs:
       - name: go vet
         run: go vet ./...
       - name: Test (race) + coverage
-        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+        run: |
+          # Scope coverage to the shipped library packages, excluding non-library
+          # tooling (docs/gen) and example programs so the reported total reflects
+          # real library code.
+          pkgs="$(go list ./... | grep -vE '/(docs/gen|examples)')"
+          go test -race -covermode=atomic -coverprofile=coverage.out $pkgs
       - name: Coverage total
         run: go tool cover -func=coverage.out | tail -n1
       - name: Upload coverage report
