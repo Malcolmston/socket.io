@@ -1,11 +1,52 @@
 // Package redis provides a Redis-backed Broadcaster for socketio, enabling
 // multi-node scale-out: broadcasts are relayed between server instances over
 // Redis pub/sub so a message emitted on one node reaches sockets connected to
-// any node. It speaks the Redis RESP protocol directly using only the standard
-// library — no third-party client.
+// any node. It is the Go counterpart of the Node.js @socket.io/redis-adapter,
+// and it speaks the Redis RESP protocol directly using only the standard
+// library — no third-party client and no cgo:
 //
 //	bc, _ := redis.New(redis.Options{Addr: "localhost:6379", Channel: "socket.io"})
 //	io.SetBroadcaster(bc) // io is a *socketio.Server
+//
+// A single socketio.Server keeps its room and socket membership in memory, so a
+// broadcast only reaches clients connected to that one process. Once you run
+// more than one instance behind a load balancer — for horizontal scaling or high
+// availability — clients are spread across processes and an in-memory broadcast
+// no longer reaches everyone. Install this Broadcaster on every node and each
+// call to io.Emit, io.To(room).Emit, and the other broadcast forms is instead
+// published once to Redis and delivered to the local sockets of every node that
+// receives it. Reach for this package as soon as you scale past a single server.
+//
+// It works by holding two Redis connections: one for PUBLISH and one that issues
+// SUBSCRIBE and runs a background receive loop. When the server broadcasts, it
+// serializes the target namespace, rooms, exclusions, event name, and arguments
+// and calls Publish, which PUBLISHes the bytes to the configured channel. Redis
+// fans that message out to every subscriber, including the publisher, and the
+// receive loop hands each incoming payload to the handler the server registered
+// through OnMessage — which decodes it and re-emits to that node's local
+// sockets. Because pub/sub echoes to the sender, the originating node delivers
+// its own broadcast through exactly the same path, so no node is special-cased.
+//
+// New connects, authenticates (AUTH) and selects a database (SELECT) if
+// configured, subscribes, and returns a *Broadcaster ready to pass to
+// server.SetBroadcaster; Options carries Addr, Channel, Password, DB, and an
+// optional Dial hook used by tests to substitute an in-memory connection. The
+// three methods that satisfy socketio.Broadcaster — Publish, OnMessage, and
+// Close — are safe for concurrent use: Publish serializes writes on the publish
+// connection with a mutex, and OnMessage/Close guard shared state with their
+// own lock. Close is idempotent and tears down both connections, ending the
+// receive loop.
+//
+// Delivery inherits Redis pub/sub semantics, which callers should understand.
+// Pub/sub is fire-and-forget and at-most-once: messages are not persisted or
+// queued, so a node that is down or momentarily disconnected misses whatever was
+// published while it was unavailable — matching the behavior of the Node redis
+// adapter. Publish returns an error only if the local write to Redis fails, not
+// if a remote subscriber never receives the message. The RESP codec here
+// implements just the commands this adapter needs (SUBSCRIBE, PUBLISH, AUTH,
+// SELECT and their replies); it is not a general-purpose Redis client. It does
+// not (yet) implement the adapter's remote request/response features such as
+// cross-node fetchSockets or server-side acknowledgements.
 package redis
 
 import (

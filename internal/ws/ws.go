@@ -1,8 +1,46 @@
-// Package ws is a minimal, dependency-free RFC 6455 WebSocket server
-// implementation, sufficient to carry Engine.IO/Socket.IO traffic. It supports
-// the server-side opening handshake, fragmented data messages, and the control
-// frames (ping/pong/close). Only what Socket.IO needs is implemented; it is not
-// a general-purpose WebSocket library.
+// Package ws is a minimal, dependency-free RFC 6455 WebSocket implementation,
+// sufficient to carry Engine.IO/Socket.IO traffic. It provides both sides of a
+// connection: a server that upgrades an incoming net/http request and a client
+// that dials a remote endpoint. It supports the opening handshake, fragmented
+// data messages, and the control frames (ping/pong/close). Only what Socket.IO
+// needs is implemented; it is not a general-purpose WebSocket library, and it is
+// an internal package with no compatibility guarantees for outside importers.
+//
+// It exists so that the surrounding module can offer WebSocket transport using
+// nothing but the Go standard library — no gorilla/websocket, no nhooyr, no cgo.
+// The socketio server calls Upgrade to turn a hijacked HTTP connection into a
+// *Conn; the client package calls Dial to obtain a *Conn to a remote server.
+// Both then exchange Engine.IO frames through the same small message API, so the
+// rest of the stack is transport-agnostic.
+//
+// The server handshake works by validating the Upgrade/Connection headers and
+// Sec-WebSocket-Version (13), hijacking the underlying net.Conn via
+// http.Hijacker, and replying with the 101 Switching Protocols response whose
+// Sec-WebSocket-Accept is the SHA-1/base64 digest of the client key plus the
+// RFC 6455 GUID. IsWebSocketUpgrade reports whether a request is a WebSocket
+// upgrade so callers can branch before attempting Upgrade. Dial performs the
+// mirror image: it opens a TCP connection, sends the GET upgrade request with a
+// random key, and verifies the server's accept value.
+//
+// Messages are exchanged with ReadMessage and WriteMessage (or the WriteText
+// convenience), which speak whole logical messages rather than raw frames.
+// ReadMessage reassembles fragmented messages, transparently answers ping
+// control frames with a pong, and responds to a close frame by echoing it and
+// returning ErrClosed. MessageType distinguishes TextMessage from
+// BinaryMessage, which matches Engine.IO's split between string packets and
+// binary attachments. Per RFC 6455, client-originated frames are masked with a
+// fresh random key (Conn tracks whether it is a client), while server frames are
+// sent unmasked.
+//
+// A Conn is safe for one concurrent reader and one concurrent writer: writes are
+// serialized by an internal mutex and the closed flag is atomic, so a reader
+// that observes a close while a writer is mid-flight will not race. It is not
+// safe to call ReadMessage from two goroutines at once. Close sends a normal
+// (1000) close frame and tears down the transport; subsequent writes return
+// ErrClosed. Notably absent, because Socket.IO does not require them, are
+// permessage-deflate compression, subprotocol negotiation, and read/write
+// deadlines — callers that need timeouts should manage them on the underlying
+// connection or via request context.
 package ws
 
 import (
