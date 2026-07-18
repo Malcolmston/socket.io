@@ -122,17 +122,24 @@ func DecodePacket(s string) (Packet, error) {
 	p.Type = PacketType(s[0] - '0')
 	i := 1
 
-	// Binary attachment count ("<n>-") for binary packet types.
+	// Binary attachment count ("<n>-") for binary packet types. Upstream
+	// socket.io-parser rejects a BINARY_EVENT/BINARY_ACK header that lacks a
+	// valid "<n>-" attachments prefix (its "Illegal attachments" error), so a
+	// bare "5" or a "5-" with no leading digits is malformed.
 	if p.Type == BinaryEvent || p.Type == BinaryAck {
 		j := i
 		for j < len(s) && isDigit(s[j]) {
 			j++
 		}
-		if j < len(s) && s[j] == '-' {
-			if n, err := strconv.Atoi(s[i:j]); err == nil {
-				p.attachments = n
+		if j > i && j < len(s) && s[j] == '-' {
+			n, err := strconv.Atoi(s[i:j])
+			if err != nil {
+				return Packet{}, ErrInvalidPacket
 			}
+			p.attachments = n
 			i = j + 1
+		} else {
+			return Packet{}, ErrInvalidPacket
 		}
 	}
 
@@ -163,13 +170,62 @@ func DecodePacket(s string) (Packet, error) {
 		i = j
 	}
 
-	// Remaining bytes are the JSON payload.
+	// Remaining bytes are the JSON payload. When a payload is present it must be
+	// well-formed JSON and appropriate for the packet type; upstream
+	// socket.io-parser rejects a mistyped payload with its "invalid payload"
+	// error (e.g. a CONNECT carrying a string, a DISCONNECT carrying anything,
+	// or an EVENT carrying a non-array).
 	if i < len(s) {
-		if err := json.Unmarshal([]byte(s[i:]), &p.Data); err != nil {
-			return Packet{}, err
+		var data any
+		if err := json.Unmarshal([]byte(s[i:]), &data); err != nil {
+			return Packet{}, ErrInvalidPacket
 		}
+		if !isPayloadValid(p.Type, data) {
+			return Packet{}, ErrInvalidPacket
+		}
+		p.Data = data
 	}
 	return p, nil
+}
+
+// isPayloadValid reports whether a decoded JSON payload is well-typed for the
+// given packet type, mirroring socket.io-parser's Decoder.isPayloadValid. It is
+// only consulted when a payload is actually present on the wire; the absence of
+// a payload is always acceptable (except that EVENT/ACK carry their data there).
+//
+// The JavaScript rules, translated to Go's json.Unmarshal value types
+// (object → map[string]any, array → []any, JSON null → nil):
+//   - CONNECT:       typeof payload === "object"  → map, array, or null
+//   - DISCONNECT:    payload === undefined        → never valid when present
+//   - CONNECT_ERROR: string or object             → string, map, array, or null
+//   - EVENT:         non-empty array
+//   - ACK:           array (any length)
+func isPayloadValid(t PacketType, data any) bool {
+	switch t {
+	case Connect:
+		switch data.(type) {
+		case map[string]any, []any, nil:
+			return true
+		}
+		return false
+	case Disconnect:
+		// A DISCONNECT must not carry a payload; reaching here means one is
+		// present, so it is always invalid.
+		return false
+	case ConnectError:
+		switch data.(type) {
+		case string, map[string]any, []any, nil:
+			return true
+		}
+		return false
+	case Event, BinaryEvent:
+		arr, ok := data.([]any)
+		return ok && len(arr) > 0
+	case Ack, BinaryAck:
+		_, ok := data.([]any)
+		return ok
+	}
+	return true
 }
 
 // EventName returns the event name for an Event/BinaryEvent packet.

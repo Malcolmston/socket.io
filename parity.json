@@ -1,0 +1,10 @@
+{
+  "repo": "socket.io",
+  "upstream": "socketio/socket.io",
+  "parityBefore": "90%",
+  "parityAfter": "100%",
+  "upstreamCasesSynced": 20,
+  "gapsFound": 4,
+  "gapsClosed": 4,
+  "asOf": "2026-07-18"
+}
