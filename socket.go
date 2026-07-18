@@ -28,6 +28,7 @@ type Socket struct {
 	pendingAcks        map[uint64]func([]any)
 	disconnected       bool
 	data               map[string]any
+	anyHandlers        []func(event string, args []any)
 }
 
 // ID returns the socket's unique identifier.
@@ -151,7 +152,13 @@ var errAckTimeout = errors.New("socketio: ack timeout")
 func (s *Socket) dispatch(pkt Packet) {
 	s.mu.Lock()
 	handlers := append([]EventHandler(nil), s.handlers[pkt.EventName()]...)
+	anyHandlers := make([]func(string, []any), len(s.anyHandlers))
+	copy(anyHandlers, s.anyHandlers)
 	s.mu.Unlock()
+
+	for _, h := range anyHandlers {
+		h(pkt.EventName(), pkt.Args())
+	}
 
 	var ackData []any
 	for _, h := range handlers {

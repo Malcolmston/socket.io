@@ -1,17 +1,23 @@
 package socketio
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // BroadcastOperator emits events to a filtered set of sockets in a namespace —
 // optionally scoped to one or more rooms and excluding specific sockets. It is
 // returned by Namespace.To, Server.To, and Socket.To, and is the equivalent of
 // io.to(room).emit(...).
 type BroadcastOperator struct {
-	ns       *Namespace
-	rooms    []string
-	except   map[string]struct{}
-	volatile bool
-	compress bool
+	ns          *Namespace
+	rooms       []string
+	except      map[string]struct{}
+	exceptRooms []string
+	volatile    bool
+	compress    bool
+	local       bool
+	timeout     time.Duration
 }
 
 // Volatile marks the broadcast as volatile: messages that cannot be delivered
@@ -51,11 +57,14 @@ func (b *BroadcastOperator) Except(socketID string) *BroadcastOperator {
 // Broadcaster is installed, the broadcast is published to all nodes (which each
 // deliver it to their local sockets); otherwise it is delivered locally.
 func (b *BroadcastOperator) Emit(event string, args ...any) {
-	if bc := b.ns.server.broadcaster; bc != nil {
+	skip := b.resolvedExcept()
+	// A local-only broadcast never leaves this node, even when a cluster
+	// Broadcaster is installed — the equivalent of socket.io's .local flag.
+	if bc := b.ns.server.broadcaster; bc != nil && !b.local {
 		msg := broadcastMessage{
 			Namespace: b.ns.name,
 			Rooms:     b.rooms,
-			Except:    exceptKeys(b.except),
+			Except:    exceptKeys(skip),
 			Event:     event,
 			Args:      args,
 		}
@@ -64,17 +73,38 @@ func (b *BroadcastOperator) Emit(event string, args ...any) {
 			return
 		}
 	}
-	b.emitLocal(event, args...)
+	b.emitLocalExcept(skip, event, args...)
 }
 
 // emitLocal delivers the broadcast to this node's local sockets only.
 func (b *BroadcastOperator) emitLocal(event string, args ...any) {
+	b.emitLocalExcept(b.resolvedExcept(), event, args...)
+}
+
+// emitLocalExcept delivers the broadcast to this node's local sockets, skipping
+// any whose id is in the provided exclusion set.
+func (b *BroadcastOperator) emitLocalExcept(skip map[string]struct{}, event string, args ...any) {
 	for _, s := range b.targets() {
-		if _, skip := b.except[s.id]; skip {
+		if _, excluded := skip[s.id]; excluded {
 			continue
 		}
 		_ = s.Emit(event, args...)
 	}
+}
+
+// resolvedExcept returns the effective exclusion set: the explicitly excluded
+// socket ids plus every socket that is a member of an excepted room.
+func (b *BroadcastOperator) resolvedExcept() map[string]struct{} {
+	skip := make(map[string]struct{}, len(b.except))
+	for id := range b.except {
+		skip[id] = struct{}{}
+	}
+	for _, room := range b.exceptRooms {
+		for _, s := range b.ns.SocketsInRoom(room) {
+			skip[s.id] = struct{}{}
+		}
+	}
+	return skip
 }
 
 func exceptKeys(m map[string]struct{}) []string {

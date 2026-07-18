@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-18
+### Added
+- Streaming Socket.IO parser (`Encoder`/`Decoder`) mirroring `socket.io-parser`:
+  encode a packet into its ordered transport frames and reassemble multi-frame
+  binary packets (`BINARY_EVENT`/`BINARY_ACK`), plus `Packet.HasBinaryData`.
+- Catch-all socket listeners (`Socket.OnAny`, `PrependAny`, `OffAny`,
+  `ListenersAny`) — the equivalent of `socket.onAny`.
+- Broadcast-flag and room parity: `BroadcastOperator.Local`, `Timeout`,
+  `ExceptRoom`, and `In`/`Except`/`Local` entry points on `Namespace`, `Server`,
+  and `Socket` (`io.in`, `io.except`, `io.local`, `socket.in`, `socket.except`).
+- `Handshake` object and `NewHandshake` capturing request headers, address
+  (honoring `X-Forwarded-For`), query, TLS state, and auth — like
+  `socket.handshake`.
+- Reserved-event guards: `IsReservedEvent`, `ValidateEventName`,
+  `ReservedEvents`.
+- Engine.IO WebSocket close codes (`CloseCode` + RFC 6455 constants,
+  `EncodeCloseFrame`, `DecodeCloseFrame`, `IsValid`) and packet constructors
+  (`NewPing`, `NewPong`, `NewClose`, `NewUpgrade`, `NewNoop`,
+  `NewBinaryMessage`, `Packet.IsBinary`).
+- Client reconnection `Backoff` (exponential delay with optional deterministic
+  jitter), mirroring the JS client's `backo2`.
+
 ## [0.1.0] - 2026-07-04
 ### Added
 - Initial public release — a from-scratch Go port of Socket.IO.
@@ -24,5 +46,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI: build/test matrix (Go 1.23 & 1.24), `-race` + coverage, golangci-lint v2,
   govulncheck, CodeQL, benchmarks, dependency review, and a stale bot.
 
-[Unreleased]: https://github.com/malcolmston/socket.io/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/malcolmston/socket.io/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/malcolmston/socket.io/compare/v0.1.0...v0.3.0
 [0.1.0]: https://github.com/malcolmston/socket.io/releases/tag/v0.1.0
