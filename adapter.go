@@ -37,12 +37,15 @@ func newMemoryAdapter() *memoryAdapter {
 	}
 }
 
+// Add implements Adapter.Add, registering the socket under id in the namespace.
 func (a *memoryAdapter) Add(id string, s *Socket) {
 	a.mu.Lock()
 	a.sockets[id] = s
 	a.mu.Unlock()
 }
 
+// Remove implements Adapter.Remove, deleting the socket with the given id and
+// dropping it from every room, discarding any room that becomes empty.
 func (a *memoryAdapter) Remove(id string) {
 	a.mu.Lock()
 	delete(a.sockets, id)
@@ -57,6 +60,9 @@ func (a *memoryAdapter) Remove(id string) {
 	a.mu.Unlock()
 }
 
+// Join implements Adapter.Join, adding the socket identified by id to room,
+// creating the room if it does not yet exist. The socket is only added if it is
+// currently registered in the namespace.
 func (a *memoryAdapter) Join(id, room string) {
 	a.mu.Lock()
 	members := a.rooms[room]
@@ -70,6 +76,8 @@ func (a *memoryAdapter) Join(id, room string) {
 	a.mu.Unlock()
 }
 
+// Leave implements Adapter.Leave, removing the socket identified by id from
+// room and discarding the room once it has no remaining members.
 func (a *memoryAdapter) Leave(id, room string) {
 	a.mu.Lock()
 	if members := a.rooms[room]; members != nil {
@@ -81,6 +89,8 @@ func (a *memoryAdapter) Leave(id, room string) {
 	a.mu.Unlock()
 }
 
+// SocketsInRoom implements Adapter.SocketsInRoom, returning the sockets that
+// are members of room, or an empty slice if the room has no members.
 func (a *memoryAdapter) SocketsInRoom(room string) []*Socket {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -92,6 +102,8 @@ func (a *memoryAdapter) SocketsInRoom(room string) []*Socket {
 	return out
 }
 
+// AllSockets implements Adapter.AllSockets, returning every socket currently
+// registered in the namespace.
 func (a *memoryAdapter) AllSockets() []*Socket {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -102,6 +114,8 @@ func (a *memoryAdapter) AllSockets() []*Socket {
 	return out
 }
 
+// Get implements Adapter.Get, returning the socket registered under id and
+// whether it was present.
 func (a *memoryAdapter) Get(id string) (*Socket, bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
